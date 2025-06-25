@@ -7,6 +7,7 @@ that will be read in by the Fortran code.
 
 """
 
+from pathlib import Path
 import os
 import datetime
 import shutil
@@ -16,7 +17,7 @@ import numpy as np
 
 from clawpack.geoclaw.surge.storm import Storm
 import clawpack.clawutil as clawutil
-
+import clawpack.geoclaw.util as util
 
 # Time Conversions
 def days2seconds(days):
@@ -24,8 +25,8 @@ def days2seconds(days):
 
 
 # Scratch directory for storing topo and storm files:
-scratch_dir = os.path.join(os.environ["CLAW"], 'geoclaw', 'scratch')
-
+CLAW = Path(os.environ["CLAW"])
+scratch_dir = CLAW / 'geoclaw' / 'scratch'
 
 # ------------------------------
 def setrun(claw_pkg='geoclaw'):
@@ -69,7 +70,7 @@ def setrun(claw_pkg='geoclaw'):
     clawdata.upper[0] = -60.0      # east longitude
 
     clawdata.lower[1] = 20.0       # south latitude
-    clawdata.upper[1] = 50.0      # north latitude
+    clawdata.upper[1] = 50.0       # north latitude
 
     # Number of grid cells:
     degree_factor = 4  # (0.25º,0.25º) ~ (25237.5 m, 27693.2 m) resolution
@@ -96,8 +97,8 @@ def setrun(claw_pkg='geoclaw'):
     # -------------
     # Initial time:
     # -------------
-    clawdata.t0 =  days2seconds(-2.0)
-    clawdata.tfinal = days2seconds(1.0)
+    clawdata.t0 =  days2seconds(0.0)
+    clawdata.tfinal = days2seconds(5.0)
 
     # Restart from checkpoint file of a previous run?
     # If restarting, t0 above should be from original run, and the
@@ -119,7 +120,7 @@ def setrun(claw_pkg='geoclaw'):
 
     if clawdata.output_style == 1:
         # Output nout frames at equally spaced times up to tfinal:
-        recurrence = 24 * 4
+        recurrence = 24
         clawdata.num_output_times = int((clawdata.tfinal - clawdata.t0) *
                                         recurrence / (60**2 * 24))
 
@@ -189,7 +190,7 @@ def setrun(claw_pkg='geoclaw'):
     clawdata.transverse_waves = 2
 
     # Number of waves in the Riemann solution:
-    clawdata.num_waves = 3 + 1
+    clawdata.num_waves = 3
 
     # List of limiters to use for each wave family:
     # Required:  len(limiter) == num_waves
@@ -199,7 +200,7 @@ def setrun(claw_pkg='geoclaw'):
     #   2 or 'superbee' ==> superbee
     #   3 or 'mc'       ==> MC limiter
     #   4 or 'vanleer'  ==> van Leer
-    clawdata.limiter = ['mc', 'mc', 'mc', 'mc']
+    clawdata.limiter = ['mc', 'mc', 'mc']
 
     clawdata.use_fwaves = True    # True ==> use f-wave version of algorithms
 
@@ -259,7 +260,7 @@ def setrun(claw_pkg='geoclaw'):
     amrdata = rundata.amrdata
 
     # max number of refinement levels:
-    amrdata.amr_levels_max = 7
+    amrdata.amr_levels_max = 1
 
     amrdata.refinement_ratios_x = [2, 2, 2, 3, 3, 3, 4, 4]
     amrdata.refinement_ratios_y = [2, 2, 2, 3, 3, 3, 4, 4]
@@ -311,12 +312,12 @@ def setrun(claw_pkg='geoclaw'):
     # to specify regions of refinement append lines of the form
     #  [minlevel,maxlevel,t1,t2,x1,x2,y1,y2]
     # Entire domain
-    regions.append([1, 4, clawdata.t0, clawdata.tfinal, 
-                          clawdata.lower[0], clawdata.upper[0], 
-                          clawdata.lower[1], clawdata.upper[1]])
-    # NYC Region
-    regions.append([1, 7, clawdata.t0, clawdata.tfinal, 
-                          -74.5, -73.5, 40.3, 41.0])
+    # regions.append([1, 4, clawdata.t0, clawdata.tfinal, 
+    #                       clawdata.lower[0], clawdata.upper[0], 
+    #                       clawdata.lower[1], clawdata.upper[1]])
+    # # NYC Region
+    # regions.append([1, 7, clawdata.t0, clawdata.tfinal, 
+    #                       -74.5, -73.5, 40.3, 41.0])
 
     # regions.append([5, 6, clawdata.t0, clawdata.tfinal, -74.25,-73.5,40.5,41]) # refine gauge 1,2,3
     # regions.append([5, 6, clawdata.t0, clawdata.tfinal, -73.25,-72.75,41,41.5]) # refine gauge 4,5
@@ -374,8 +375,7 @@ def setgeo(rundata):
     geo_data.friction_depth = 1e10
 
     # == Algorithm and Initial Conditions ==
-    # geo_data.sea_level = 0.0
-    geo_data.sea_level = 0.25
+    geo_data.sea_level = 0.0
     geo_data.dry_tolerance = 1.e-2
 
     # Refinement Criteria
@@ -396,40 +396,40 @@ def setgeo(rundata):
     # topo_data.topofiles.append([3, os.path.join(topo_dir, 'newyork_3s.tt3')])
     topo_data.topofiles.append([4, os.path.join(topo_dir, 
                                                 "GEBCO", "GEBCO_2023.nc")])
-    ncei_base_path = os.path.join(topo_dir, "ny_area", "ncei19_ny")
-    ncei_file_list = ["ncei19_n40x50_w074x00_2018v2.nc",
-                      "ncei19_n40x50_w074x25_2018v2.nc",
-                      "ncei19_n40x75_w073x00_2015v1.nc",
-                      "ncei19_n40x75_w073x25_2015v1.nc",
-                      "ncei19_n40x75_w073x50_2015v1.nc",
-                      "ncei19_n40x75_w073x75_2015v1.nc",
-                      "ncei19_n40x75_w074x00_2015v1.nc",
-                      "ncei19_n40x75_w074x25_2015v1.nc",
-                      "ncei19_n41x00_w072x25_2015v1.nc",
-                      "ncei19_n41x00_w072x50_2015v1.nc",
-                      "ncei19_n41x00_w072x75_2015v1.nc",
-                      "ncei19_n41x00_w073x00_2015v1.nc",
-                      "ncei19_n41x00_w073x25_2015v1.nc",
-                      "ncei19_n41x00_w073x50_2015v1.nc",
-                      "ncei19_n41x00_w073x75_2015v1.nc",
-                      "ncei19_n41x00_w074x00_2015v1.nc",
-                      "ncei19_n41x00_w074x25_2015v1.nc",
-                      "ncei19_n41x25_w072x00_2015v1.nc",
-                      "ncei19_n41x25_w072x25_2015v1.nc",
-                      "ncei19_n41x25_w072x50_2015v1.nc",
-                      "ncei19_n41x25_w072x75_2015v1.nc",
-                      "ncei19_n41x25_w073x00_2016v1.nc",
-                      "ncei19_n41x25_w073x25_2016v1.nc",
-                      "ncei19_n41x25_w073x50_2015v1.nc",
-                      "ncei19_n41x25_w073x75_2015v1.nc",
-                      "ncei19_n41x25_w074x00_2015v1.nc",
-                      "ncei19_n41x50_w072x00_2016v1.nc",
-                      "ncei19_n41x50_w072x25_2016v1.nc",
-                      "ncei19_n41x50_w072x50_2016v1.nc",
-                      "ncei19_n41x50_w072x75_2016v1.nc",
-                      "ncei19_n41x50_w073x00_2016v1.nc"]
-    for file_name in ncei_file_list:
-        topo_data.topofiles.append([4, os.path.join(ncei_base_path, file_name)])
+    # ncei_base_path = os.path.join(topo_dir, "ny_area", "ncei19_ny")
+    # ncei_file_list = ["ncei19_n40x50_w074x00_2018v2.nc",
+    #                   "ncei19_n40x50_w074x25_2018v2.nc",
+    #                   "ncei19_n40x75_w073x00_2015v1.nc",
+    #                   "ncei19_n40x75_w073x25_2015v1.nc",
+    #                   "ncei19_n40x75_w073x50_2015v1.nc",
+    #                   "ncei19_n40x75_w073x75_2015v1.nc",
+    #                   "ncei19_n40x75_w074x00_2015v1.nc",
+    #                   "ncei19_n40x75_w074x25_2015v1.nc",
+    #                   "ncei19_n41x00_w072x25_2015v1.nc",
+    #                   "ncei19_n41x00_w072x50_2015v1.nc",
+    #                   "ncei19_n41x00_w072x75_2015v1.nc",
+    #                   "ncei19_n41x00_w073x00_2015v1.nc",
+    #                   "ncei19_n41x00_w073x25_2015v1.nc",
+    #                   "ncei19_n41x00_w073x50_2015v1.nc",
+    #                   "ncei19_n41x00_w073x75_2015v1.nc",
+    #                   "ncei19_n41x00_w074x00_2015v1.nc",
+    #                   "ncei19_n41x00_w074x25_2015v1.nc",
+    #                   "ncei19_n41x25_w072x00_2015v1.nc",
+    #                   "ncei19_n41x25_w072x25_2015v1.nc",
+    #                   "ncei19_n41x25_w072x50_2015v1.nc",
+    #                   "ncei19_n41x25_w072x75_2015v1.nc",
+    #                   "ncei19_n41x25_w073x00_2016v1.nc",
+    #                   "ncei19_n41x25_w073x25_2016v1.nc",
+    #                   "ncei19_n41x25_w073x50_2015v1.nc",
+    #                   "ncei19_n41x25_w073x75_2015v1.nc",
+    #                   "ncei19_n41x25_w074x00_2015v1.nc",
+    #                   "ncei19_n41x50_w072x00_2016v1.nc",
+    #                   "ncei19_n41x50_w072x25_2016v1.nc",
+    #                   "ncei19_n41x50_w072x50_2016v1.nc",
+    #                   "ncei19_n41x50_w072x75_2016v1.nc",
+    #                   "ncei19_n41x50_w073x00_2016v1.nc"]
+    # for file_name in ncei_file_list:
+    #     topo_data.topofiles.append([4, os.path.join(ncei_base_path, file_name)])
 
     # ================
     #  Set Surge Data
@@ -447,29 +447,26 @@ def setgeo(rundata):
     data.wind_refine = [20.0, 40.0, 60.0]
     data.R_refine = [60.0e3, 40e3, 20e3]
 
-    # Storm parameters - Parameterized storm (Holland 1980)
-    data.storm_specification_type = 'holland80'  # (type 1)
-    data.storm_file = os.path.expandvars(os.path.join(os.getcwd(),
-                                         'sandy.storm'))
-
-    # Convert ATCF data to GeoClaw format
-    clawutil.data.get_remote_file("http://ftp.nhc.noaa.gov/atcf/archive/2012/bal182012.dat.gz")
-    atcf_path = os.path.join(scratch_dir, "bal182012.dat")
-    # Note that the get_remote_file function does not support gzip files which
-    # are not also tar files.  The following code handles this
-    with gzip.open(".".join((atcf_path, 'gz')), 'rb') as atcf_file,    \
-            open(atcf_path, 'w') as atcf_unzipped_file:
-        atcf_unzipped_file.write(atcf_file.read().decode('ascii'))
-
-    sandy = Storm(path=atcf_path, file_format="ATCF")
-
-    # Calculate landfall time - Need to specify as the file above does not
-    sandy.time_offset = datetime.datetime(2012, 10, 29, 23, 30)
-
-    # Increase strength of storm
-    # sandy.max_wind_speed = sandy.max_wind_speed * 1.1
-
-    sandy.write(data.storm_file, file_format='geoclaw')
+    # Storm parameters - NetCDF file
+    data.storm_specification_type = 'data'
+    data.storm_file = (Path() / "etc_storm.storm").resolve()
+    
+    etc_storm = Storm()
+    # Wrap coordinates
+    input_path = (Path(os.environ['DATA_PATH']) / "ETC_NASA_SLCT" 
+                              / "f166d10549b1da216d3d9a1a3d9f6af2.nc").resolve()
+    output_path = (Path(os.environ['DATA_PATH']) / "ETC_NASA_SLCT" 
+                        / "f166d10549b1da216d3d9a1a3d9f6af2_swap.nc").resolve()
+    util.wrap_coordinates(input_path, output_path=output_path, 
+                                      dim_mapping={'t': 'valid_time'}, 
+                                      force=False)
+    etc_storm.file_paths.append(output_path)
+    etc_storm.time_offset = np.datetime64("2012-12-25")
+    etc_storm.file_format = 'netcdf'
+    etc_storm.write(data.storm_file, file_format='data',
+                                     dim_mapping={"t": "valid_time"},
+                                     var_mapping={"pressure": "msl"},
+                                     verbose=True)
 
     # =======================
     #  Set Variable Friction

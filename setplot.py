@@ -17,7 +17,7 @@ matplotlib.rcParams['xtick.labelsize'] = 16
 matplotlib.rcParams['ytick.labelsize'] = 16
 
 # DPI of output images
-article = True
+article = False
 if article:
     matplotlib.rcParams['savefig.dpi'] = 300
     matplotlib.rcParams['axes.titlesize'] = 'x-large'
@@ -77,10 +77,10 @@ def setplot(plotdata=None):
 
     # Color limits
     # surface_limits = [-4.0, 4.0]
-    surface_limits = [0.0, 3.0]
+    surface_limits = [0.0, 1.0]
     speed_limits = [0.0, 2.0]
-    wind_limits = [0, 64]
-    pressure_limits = [935, 1013]
+    wind_limits = [0, 30]
+    pressure_limits = [980, 1013]
     friction_bounds = [0.01, 0.04]
 
     def friction_after_axes(cd):
@@ -150,19 +150,19 @@ def setplot(plotdata=None):
     #
     # Friction field
     #
-    plotfigure = plotdata.new_plotfigure(name='Friction')
-    plotfigure.show = friction_data.variable_friction and False
+    # plotfigure = plotdata.new_plotfigure(name='Friction')
+    # plotfigure.show = friction_data.variable_friction and False
 
-    plotaxes = plotfigure.new_plotaxes()
-    plotaxes.xlimits = regions['Full Domain']['xlimits']
-    plotaxes.ylimits = regions['Full Domain']['ylimits']
-    plotaxes.title = "Manning's N Coefficient"
-    plotaxes.afteraxes = friction_after_axes
-    plotaxes.scaled = True
+    # plotaxes = plotfigure.new_plotaxes()
+    # plotaxes.xlimits = regions['Full Domain']['xlimits']
+    # plotaxes.ylimits = regions['Full Domain']['ylimits']
+    # plotaxes.title = "Manning's N Coefficient"
+    # plotaxes.afteraxes = friction_after_axes
+    # plotaxes.scaled = True
 
-    surgeplot.add_friction(plotaxes, bounds=friction_bounds, shrink=0.9)
-    plotaxes.plotitem_dict['friction'].amr_patchedges_show = [0] * 10
-    plotaxes.plotitem_dict['friction'].colorbar_label = "$n$"
+    # surgeplot.add_friction(plotaxes, bounds=friction_bounds, shrink=0.9)
+    # plotaxes.plotitem_dict['friction'].amr_patchedges_show = [0] * 10
+    # plotaxes.plotitem_dict['friction'].colorbar_label = "$n$"
 
     #
     #  Hurricane Forcing fields
@@ -243,17 +243,17 @@ def setplot(plotdata=None):
                  ('8510560', 'Montauk, NY'),
                  ('8467150', 'Bridgeport, CT'),
                  ('8465705', 'New Haven, CT'),
-                 ('8461490','New London, CT')]
+                 ('8461490', 'New London, CT')]
 
-    landfall_time = np.datetime64("2012-10-29T23:30")
-    begin_date = datetime.datetime(2012, 10, 28, 23, 30)
-    end_date = datetime.datetime(2012, 10, 30, 23, 30)
+    landfall_time = np.datetime64("2012-12-25T00:00")
+    begin_date = datetime.datetime(2012, 12, 25, 0, 0)
+    end_date = datetime.datetime(2012, 12, 30, 0, 0)
     
     # Set up for axes in this figure:
     plotaxes = plotfigure.new_plotaxes()
     plotaxes.time_scale = 1 / (24 * 60**2)
-    plotaxes.xlimits = [-1, 1]
-    plotaxes.ylimits = [-1, 4]
+    plotaxes.xlimits = [0, 5]
+    plotaxes.ylimits = [-0.5, 2]
     plotaxes.title = "Surface"
     plotaxes.ylabel = "Surface (m)"
     plotaxes.time_label = "Days relative to landfall"
