@@ -261,6 +261,7 @@ def setrun(claw_pkg='geoclaw'):
 
     # max number of refinement levels:
     amrdata.amr_levels_max = 1
+    amrdata.max1d = 32
 
     amrdata.refinement_ratios_x = [2, 2, 2, 3, 3, 3, 4, 4]
     amrdata.refinement_ratios_y = [2, 2, 2, 3, 3, 3, 4, 4]
@@ -463,6 +464,13 @@ def setgeo(rundata):
     etc_storm.file_paths.append(output_path)
     etc_storm.time_offset = np.datetime64("2012-12-25")
     etc_storm.file_format = 'netcdf'
+    etc_storm.window_type = 'custom'
+    etc_storm.ramp_width = 2
+    clawdata = rundata.clawdata
+    etc_storm.window = [clawdata.lower[0] + etc_storm.ramp_width, 
+                        clawdata.lower[1] + etc_storm.ramp_width, 
+                        clawdata.upper[0] - etc_storm.ramp_width, 
+                        clawdata.upper[1] - etc_storm.ramp_width]
     etc_storm.write(data.storm_file, file_format='data',
                                      dim_mapping={"t": "valid_time"},
                                      var_mapping={"pressure": "msl"},

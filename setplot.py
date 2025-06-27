@@ -94,14 +94,14 @@ def setplot(plotdata=None):
                                "ylimits": [clawdata.lower[1], clawdata.upper[1]],
                                "shrink": 1.0,
                                "figsize": [6.4, 4.8]},
-               'Tri-State Region': {"xlimits": [-74.5,-71.0],
-                                    "ylimits": [40.0,41.5],
-                                    "shrink": 0.75,
-                                    "figsize": [6.4 * 2, 4.8]},
-                'NYC': {"xlimits": [-74.2,-73.7],
-                        "ylimits": [40.4,40.85],
-                        "shrink": 1.0,
-                        "figsize": [6.4, 4.8]}
+               # 'Tri-State Region': {"xlimits": [-74.5,-71.0],
+               #                      "ylimits": [40.0,41.5],
+               #                      "shrink": 0.75,
+               #                      "figsize": [6.4 * 2, 4.8]},
+               #  'NYC': {"xlimits": [-74.2,-73.7],
+               #          "ylimits": [40.4,40.85],
+               #          "shrink": 1.0,
+               #          "figsize": [6.4, 4.8]}
                }
     for (name, region_dict) in regions.items():
         [size * figsize_mult for size in region_dict['figsize']]
@@ -167,6 +167,21 @@ def setplot(plotdata=None):
     #
     #  Hurricane Forcing fields
     #
+    def draw_box(ax, box, style='r-', fill=True):
+        ax.plot([box[0], box[2]], [box[1], box[1]], style) # Bottom
+        ax.plot([box[0], box[2]], [box[3], box[3]], style) # Top
+        ax.plot([box[0], box[0]], [box[1], box[3]], style) # Left
+        ax.plot([box[2], box[2]], [box[1], box[3]], style) # Right
+
+    def forcing_afteraxes(cd):
+        surge_afteraxes(cd)
+        # width = 1.0
+        # box = np.array([-80, 27., -62., 47.5])
+        # draw_box(plt.gca(), box, style='r-')
+        # draw_box(plt.gca(), np.array([box[0]-width, box[1]-width, 
+        #                               box[2]+width, box[3]+width]), 
+        #                     style='b--')
+    
     # Pressure field
     plotfigure = plotdata.new_plotfigure(name='Pressure')
     plotfigure.show = surge_data.pressure_forcing and True
@@ -177,12 +192,12 @@ def setplot(plotdata=None):
     plotaxes.xlimits = regions['Full Domain']['xlimits']
     plotaxes.ylimits = regions['Full Domain']['ylimits']
     plotaxes.title = "Pressure Field"
-    plotaxes.afteraxes = surge_afteraxes
+    plotaxes.afteraxes = forcing_afteraxes
     plotaxes.scaled = True
     surgeplot.add_pressure(plotaxes, bounds=pressure_limits)
     surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
-    plotaxes.plotitem_dict['pressure'].amr_patchedges_show = [0] * 10
-    plotaxes.plotitem_dict['land'].amr_patchedges_show = [0] * 10
+    plotaxes.plotitem_dict['pressure'].amr_patchedges_show = [1] * 10
+    plotaxes.plotitem_dict['land'].amr_patchedges_show = [1] * 10
 
     # Wind field
     plotfigure = plotdata.new_plotfigure(name='Wind Speed')
@@ -194,12 +209,12 @@ def setplot(plotdata=None):
     plotaxes.xlimits = regions['Full Domain']['xlimits']
     plotaxes.ylimits = regions['Full Domain']['ylimits']
     plotaxes.title = "Wind Field"
-    plotaxes.afteraxes = surge_afteraxes
+    plotaxes.afteraxes = forcing_afteraxes
     plotaxes.scaled = True
     surgeplot.add_wind(plotaxes, bounds=wind_limits)
     surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
-    plotaxes.plotitem_dict['wind'].amr_patchedges_show = [0] * 10
-    plotaxes.plotitem_dict['land'].amr_patchedges_show = [0] * 10
+    plotaxes.plotitem_dict['wind'].amr_patchedges_show = [1] * 10
+    plotaxes.plotitem_dict['land'].amr_patchedges_show = [1] * 10
     plotaxes.plotitem_dict['wind'].add_colorbar = add_colorbar
     # plotaxes.plotitem_dict['land'].add_colorbar = add_colorbar
 
