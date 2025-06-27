@@ -19,7 +19,7 @@ def plot_fields(path, movie=True, force=False):
     subset = data.sel(valid_time=slice(*t_range))
     t = (subset.valid_time - t_range[0]) / np.timedelta64(1, 's')
     
-    out_path = Path() / "storm_output"
+    out_path = Path() / "storm_plots"
     out_path.mkdir(exist_ok=True)
 
     xlimits = (80, 130)

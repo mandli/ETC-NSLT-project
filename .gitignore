@@ -10,6 +10,7 @@ _plots
 *.storm
 pyclaw.log
 xgeoclaw
+storm_plots/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
