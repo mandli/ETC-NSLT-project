@@ -457,10 +457,9 @@ def setgeo(rundata):
     input_path = (Path(os.environ['DATA_PATH']) / "ETC_NASA_SLCT" 
                               / "f166d10549b1da216d3d9a1a3d9f6af2.nc").resolve()
     output_path = (Path(os.environ['DATA_PATH']) / "ETC_NASA_SLCT" 
-                        / "f166d10549b1da216d3d9a1a3d9f6af2_swap.nc").resolve()
-    util.wrap_coordinates(input_path, output_path=output_path, 
-                                      dim_mapping={'t': 'valid_time'}, 
-                                      force=False)
+                        / "f166d10549b1da216d3d9a1a3d9f6af2_wrap.nc").resolve()
+    util.wrap_coords(input_path, output_path=output_path, 
+                                 dim_mapping={'t': 'valid_time'})
     etc_storm.file_paths.append(output_path)
     etc_storm.time_offset = np.datetime64("2012-12-25")
     etc_storm.file_format = 'netcdf'
