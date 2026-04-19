@@ -29,20 +29,14 @@ else:
     add_colorbar = True
 import matplotlib.pyplot as plt
 
-import clawpack.visclaw.colormaps as colormap
 import clawpack.visclaw.gaugetools as gaugetools
 import clawpack.clawutil.data as clawutil
-import clawpack.amrclaw.data as amrclaw
 import clawpack.geoclaw.data as geodata
 import clawpack.geoclaw.surge.plot as surgeplot
-import clawpack.geoclaw.topotools as topotools
-import csv
+import clawpack.geoclaw.util as geoutil
+import clawpack.amrclaw.data as amrdata
 from clawpack.geoclaw.util import fetch_noaa_tide_data
-
-# surface_cmap = colormap.white_red
-surface_cmap = colormap.make_colormap({0:[0.0,1.0,1.0], 0.5:'#ffdddd', 1.0:"r"})
-surface_cmap = colormap.make_colormap({0:[0.0, 1.0, 1.0], 1.0:[1.0,0.0,0.0]})
-surface_cmap = colormap.make_colormap({0:'w', 1.0:'r'})
+import clawpack.geoclaw.surge.storm as stormtools
 
 def setplot(plotdata=None):
     """"""
@@ -64,6 +58,10 @@ def setplot(plotdata=None):
     surge_data.read(os.path.join(plotdata.outdir, 'surge.data'))
     friction_data = geodata.FrictionData()
     friction_data.read(os.path.join(plotdata.outdir, 'friction.data'))
+    gauge_data = amrdata.GaugeData()
+    gauge_data.read(plotdata.outdir)
+
+    storm = stormtools.Storm(surge_data.storm_file, file_format="data")
 
     # Load storm track
     track = surgeplot.track_data(os.path.join(plotdata.outdir, 'fort.track'))
@@ -76,32 +74,29 @@ def setplot(plotdata=None):
         surgeplot.days_figure_title(cd, new_time=True)
 
     # Color limits
-    # surface_limits = [-4.0, 4.0]
-    surface_limits = [0.0, 1.0]
+    surface_limits = [-1.0 + physics.sea_level, 1.0 + physics.sea_level]
+    # surface_limits = [0.0, 1.0]
     speed_limits = [0.0, 2.0]
     wind_limits = [0, 30]
     pressure_limits = [980, 1013]
     friction_bounds = [0.01, 0.04]
 
-    def friction_after_axes(cd):
-        plt.title(r"Manning's $n$ Coefficient")
-
     # ==========================================================================
     #   Plot specifications
     # ==========================================================================
-    
+
     regions = {'Full Domain': {"xlimits": [clawdata.lower[0], clawdata.upper[0]],
                                "ylimits": [clawdata.lower[1], clawdata.upper[1]],
                                "shrink": 1.0,
                                "figsize": [6.4, 4.8]},
-               # 'Tri-State Region': {"xlimits": [-74.5,-71.0],
-               #                      "ylimits": [40.0,41.5],
-               #                      "shrink": 0.75,
-               #                      "figsize": [6.4 * 2, 4.8]},
-               #  'NYC': {"xlimits": [-74.2,-73.7],
-               #          "ylimits": [40.4,40.85],
-               #          "shrink": 1.0,
-               #          "figsize": [6.4, 4.8]}
+               'Tri-State Region': {"xlimits": [-74.5,-71.0],
+                                    "ylimits": [40.0,41.5],
+                                    "shrink": 0.75,
+                                    "figsize": [6.4 * 2, 4.8]},
+                'NYC': {"xlimits": [-74.2,-73.7],
+                        "ylimits": [40.4,40.85],
+                        "shrink": 1.0,
+                        "figsize": [6.4, 4.8]}
                }
     for (name, region_dict) in regions.items():
         [size * figsize_mult for size in region_dict['figsize']]
@@ -120,13 +115,10 @@ def setplot(plotdata=None):
         surgeplot.add_surface_elevation(plotaxes, bounds=surface_limits)
         surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
         surgeplot.add_bathy_contours(plotaxes)
-        plotaxes.plotitem_dict['surface'].amr_patchedges_show = [0] * 10
-        plotaxes.plotitem_dict['surface'].pcolor_cmap = surface_cmap
+        plotaxes.plotitem_dict['surface'].amr_patchedges_show = [1] * 10
         plotaxes.plotitem_dict['land'].amr_patchedges_show = [0] * 10
         plotaxes.plotitem_dict['bathy'].amr_contour_show = [0, 0, 0, 0, 0, 1, 1]
         plotaxes.plotitem_dict['bathy'].kwargs = {'linewidths':0.5 * figsize_mult, 'colors': 'black'}
-        plotaxes.plotitem_dict['surface'].add_colorbar = add_colorbar
-        # plotaxes.plotitem_dict['land'].add_colorbar = add_colorbar
 
         # Speed Figure
         plotfigure = plotdata.new_plotfigure(name="Currents - %s" % name)
@@ -141,51 +133,54 @@ def setplot(plotdata=None):
         surgeplot.add_speed(plotaxes, bounds=speed_limits)
         surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
         surgeplot.add_bathy_contours(plotaxes)
-        plotaxes.plotitem_dict['speed'].amr_patchedges_show = [0] * 10
-        plotaxes.plotitem_dict['land'].amr_patchedges_show = [0] * 10
+        plotaxes.plotitem_dict['speed'].amr_patchedges_show = [1] * 10
+        plotaxes.plotitem_dict['land'].amr_patchedges_show = [1] * 10
         plotaxes.plotitem_dict['bathy'].amr_contour_show = [0, 0, 0, 0, 0, 1, 1]
         plotaxes.plotitem_dict['bathy'].kwargs = {'linewidths':0.5 * figsize_mult, 'colors': 'black'}
-        plotaxes.plotitem_dict['speed'].add_colorbar = add_colorbar
-        # plotaxes.plotitem_dict['land'].add_colorbar = add_colorbar
+
     #
     # Friction field
     #
-    # plotfigure = plotdata.new_plotfigure(name='Friction')
-    # plotfigure.show = friction_data.variable_friction and False
+    def friction_after_axes(cd):
+        plt.title(r"Manning's $n$ Coefficient")
+        for region in friction_data.friction_regions:
+            surgeplot.draw_box(plt.gca(), [region[0][0], region[1][0],
+                                           region[0][1], region[1][1]],
+                               style="k--")
 
-    # plotaxes = plotfigure.new_plotaxes()
-    # plotaxes.xlimits = regions['Full Domain']['xlimits']
-    # plotaxes.ylimits = regions['Full Domain']['ylimits']
-    # plotaxes.title = "Manning's N Coefficient"
-    # plotaxes.afteraxes = friction_after_axes
-    # plotaxes.scaled = True
 
-    # surgeplot.add_friction(plotaxes, bounds=friction_bounds, shrink=0.9)
-    # plotaxes.plotitem_dict['friction'].amr_patchedges_show = [0] * 10
-    # plotaxes.plotitem_dict['friction'].colorbar_label = "$n$"
+
+    plotfigure = plotdata.new_plotfigure(name='Friction')
+    plotfigure.show = friction_data.variable_friction and False
+
+    plotaxes = plotfigure.new_plotaxes()
+    plotaxes.xlimits = regions['Full Domain']['xlimits']
+    plotaxes.ylimits = regions['Full Domain']['ylimits']
+    plotaxes.title = "Manning's N Coefficient"
+    plotaxes.afteraxes = friction_after_axes
+    plotaxes.scaled = True
+
+    surgeplot.add_friction(plotaxes, bounds=friction_bounds, shrink=0.9)
+    plotaxes.plotitem_dict['friction'].amr_patchedges_show = [0] * 10
+    plotaxes.plotitem_dict['friction'].colorbar_label = "$n$"
 
     #
     #  Hurricane Forcing fields
     #
-    def draw_box(ax, box, style='r-', fill=True):
-        ax.plot([box[0], box[2]], [box[1], box[1]], style) # Bottom
-        ax.plot([box[0], box[2]], [box[3], box[3]], style) # Top
-        ax.plot([box[0], box[0]], [box[1], box[3]], style) # Left
-        ax.plot([box[2], box[2]], [box[1], box[3]], style) # Right
-
-    def forcing_afteraxes(cd):
+    def forcing_afteraxes(cd, title=None):
         surge_afteraxes(cd)
-        # width = 1.0
-        # box = np.array([-80, 27., -62., 47.5])
-        # draw_box(plt.gca(), box, style='r-')
-        # draw_box(plt.gca(), np.array([box[0]-width, box[1]-width, 
-        #                               box[2]+width, box[3]+width]), 
-        #                     style='b--')
-    
+        box = np.array([-80, 27.5, -62.5, 45])
+        surgeplot.draw_box(plt.gca(), box, style='r-')
+        surgeplot.draw_box(plt.gca(), np.array([box[0]-storm.ramp_width,
+                                                box[1]-storm.ramp_width,
+                                                box[2]+storm.ramp_width,
+                                                box[3]+storm.ramp_width]),
+                            style='b--')
+
     # Pressure field
     plotfigure = plotdata.new_plotfigure(name='Pressure')
     plotfigure.show = surge_data.pressure_forcing and True
-    plotfigure.kwargs = {"figsize": [6.4 * figsize_mult, 
+    plotfigure.kwargs = {"figsize": [6.4 * figsize_mult,
                                      4.8 * figsize_mult]}
 
     plotaxes = plotfigure.new_plotaxes()
@@ -195,14 +190,15 @@ def setplot(plotdata=None):
     plotaxes.afteraxes = forcing_afteraxes
     plotaxes.scaled = True
     surgeplot.add_pressure(plotaxes, bounds=pressure_limits)
-    surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
-    plotaxes.plotitem_dict['pressure'].amr_patchedges_show = [1] * 10
-    plotaxes.plotitem_dict['land'].amr_patchedges_show = [1] * 10
+    surgeplot.add_bathy_contours(plotaxes)
+    # surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
+    plotaxes.plotitem_dict['pressure'].amr_patchedges_show = [0] * 10
+    # plotaxes.plotitem_dict['land'].amr_patchedges_show = [1] * 10
 
     # Wind field
     plotfigure = plotdata.new_plotfigure(name='Wind Speed')
     plotfigure.show = surge_data.wind_forcing and True
-    plotfigure.kwargs = {"figsize": [6.4 * figsize_mult, 
+    plotfigure.kwargs = {"figsize": [6.4 * figsize_mult,
                                      4.8 * figsize_mult]}
 
     plotaxes = plotfigure.new_plotaxes()
@@ -212,100 +208,119 @@ def setplot(plotdata=None):
     plotaxes.afteraxes = forcing_afteraxes
     plotaxes.scaled = True
     surgeplot.add_wind(plotaxes, bounds=wind_limits)
-    surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
+    # surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
+    surgeplot.add_bathy_contours(plotaxes)
     plotaxes.plotitem_dict['wind'].amr_patchedges_show = [1] * 10
-    plotaxes.plotitem_dict['land'].amr_patchedges_show = [1] * 10
+    # plotaxes.plotitem_dict['land'].amr_patchedges_show = [1] * 10
     plotaxes.plotitem_dict['wind'].add_colorbar = add_colorbar
     # plotaxes.plotitem_dict['land'].add_colorbar = add_colorbar
 
     # ========================================================================
     #  Figures for gauges
     # ========================================================================
-    def get_actual_water_levels(station_id):
-        # Fetch water levels and tide predictions for given station
-        date_time, water_level, tide = fetch_noaa_tide_data(station_id,
-                begin_date, end_date)
+    def plot_observed(current_data):
+        """Fetch and plot gauge data for gauges used."""
 
-        # Calculate times relative to landfall
-        days_rel_landfall = (date_time - landfall_time) / np.timedelta64(1,'s')  / 86400
+        # Map GeoClaw gauge number to NOAA gauge number and location/name
+
+        gauge_mapping = {1: ('8518750', 'The Battery, NY'),
+                         2: ('8516945', 'Kings Point, NY'),
+                         3: ('8510560', 'Montauk, NY'),
+                         4: ('8467150', 'Bridgeport, CT'),
+                         5: ('8465705', 'New Haven, CT'),
+                         6: ('8452660', 'Newport, RI'),
+                         7: ('8531680', 'Sandy Hook, NJ'),
+                         8: ('8534720', 'Atlantic City, NJ')}
+
+        station_id, station_name = gauge_mapping[current_data.gaugesoln.id]
+        landfall_time = np.datetime64("2012-12-26T00:00")
+        begin_date = datetime.datetime(2012, 12, 25, 0, 0)
+        end_date = datetime.datetime(2012, 12, 30, 0, 0)
+        # landfall_time = np.datetime64("2018-11-14T08:00:00.00")
+        # begin_date = datetime.datetime(2018, 11, 14, 0, 0)
+        # end_date = datetime.datetime(2018, 11, 18, 0, 0)
+
+        # Fetch data if needed
+        date_time, water_level, tide = geoutil.fetch_noaa_tide_data(station_id,
+                                                                    begin_date,
+                                                                    end_date)
         
-        # Subtract tide predictions from measured water levels
-        water_level -= tide
-        
-        # Find the mean values
-        # Data imported every 6 minutes (i.e. 360 seconds)
-        num_data_pts = (end_date - begin_date).total_seconds() / 360
-        mean_value = np.sum(water_level) / num_data_pts
-        # water_level -= mean_value
-        print(f"{station_id}: {mean_value}")
+        if water_level is None:
+            print("*** Could not fetch gauge {}.".format(station_id))
+        else:
+            # Convert to seconds relative to landfall
+            t = (date_time - landfall_time) / np.timedelta64(1, 's')
+            t /= (24 * 60**2)
 
-        return days_rel_landfall, water_level
+            # Detide
+            water_level -= tide
 
-    def plot_observed(cd):
-        station_id, station_name = stations[cd.gaugeno-1]
-        days_rel_landfall, actual_level = get_actual_water_levels(station_id)
+            # Plot data
+            ax = plt.gca()
+            ax.plot(t, water_level, color='lightgray', marker='x',
+                                    label="observed")
+            ax.set_title(station_name)
+            ax.legend()
 
-        ax = plt.gca()
-        ax.plot(days_rel_landfall, actual_level, 'g')
 
     plotfigure = plotdata.new_plotfigure(name='Gauge Surfaces', figno=300,
                                          type='each_gauge')
     plotfigure.show = True
     plotfigure.clf_each_gauge = True
 
-    stations = [ ('8518750', 'The Battery, NY'),
-                 ('8516945', 'Kings Point, NY'),
-                 ('8510560', 'Montauk, NY'),
-                 ('8467150', 'Bridgeport, CT'),
-                 ('8465705', 'New Haven, CT'),
-                 ('8461490', 'New London, CT')]
-
-    landfall_time = np.datetime64("2012-12-25T00:00")
-    begin_date = datetime.datetime(2012, 12, 25, 0, 0)
-    end_date = datetime.datetime(2012, 12, 30, 0, 0)
-    
-    # Set up for axes in this figure:
     plotaxes = plotfigure.new_plotaxes()
     plotaxes.time_scale = 1 / (24 * 60**2)
-    plotaxes.xlimits = [0, 5]
-    plotaxes.ylimits = [-0.5, 2]
+    plotaxes.grid = True
+    plotaxes.xlimits = [0, 3]
+    plotaxes.ylimits = [-0.5, 2.0]
     plotaxes.title = "Surface"
     plotaxes.ylabel = "Surface (m)"
-    plotaxes.time_label = "Days relative to landfall"
+    plotaxes.time_label = "Days relative to 2012-12-26 00:00 UTC"
     plotaxes.afteraxes = plot_observed
-    plotaxes.grid = True
 
     plotitem = plotaxes.new_plotitem(plot_type='1d_plot')
-    
     plotitem.plot_var = surgeplot.gauge_surface
+    plotitem.kwargs = {"label": "computed"}
+    # Plot red area if gauge is dry
     plotitem = plotaxes.new_plotitem(plot_type='1d_plot')
     plotitem.plot_var = surgeplot.gauge_dry_regions
-    plotitem.kwargs = {"color":'lightcoral', "linewidth":5}
+    plotitem.kwargs = {"color":'lightcoral', "linewidth":5, "label": "dry"}
 
     #
-    #  Gauge Location Plot
+    #  Gauge Location Plots
     #
     def gauge_location_afteraxes(cd):
-        plt.subplots_adjust(left=0.12, bottom=0.06, right=0.97, top=0.97)
+        # plt.subplots_adjust(left=0.12, bottom=0.06, right=0.97, top=0.97)
         surge_afteraxes(cd)
         gaugetools.plot_gauge_locations(cd.plotdata, gaugenos='all',
                                         format_string='ko', add_labels=True)
 
-    plotfigure = plotdata.new_plotfigure(name="Gauge Locations")
-    plotfigure.show = True
+    gauge_locations = {0: [[-75, -70], [38, 42]]}
+    dx = 0.125
+    # for gauge in gauge_data.gauges:
+    #     x, y = gauge[1:3]
+    #     gauge_locations[gauge[0]] = [[x-dx, x+dx], [y-dx, y+dx]]
 
-    # Set up for axes in this figure:
-    plotaxes = plotfigure.new_plotaxes()
-    plotaxes.title = 'Gauge Locations'
-    plotaxes.scaled = True
-    plotaxes.xlimits = [-74.5, -71.6]
-    plotaxes.ylimits = [40.5, 41.5]
-    plotaxes.afteraxes = gauge_location_afteraxes
-    surgeplot.add_surface_elevation(plotaxes, bounds=surface_limits)
-    surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
-    plotaxes.plotitem_dict['surface'].amr_patchedges_show = [0] * 10
-    plotaxes.plotitem_dict['surface'].pcolor_cmap = surface_cmap
-    plotaxes.plotitem_dict['land'].amr_patchedges_show = [0] * 10
+    for (gauge_id, gauge_loc) in gauge_locations.items():
+        if gauge_id == 0:
+            fig_name = "All Gauge Locations"
+        else:
+            fig_name = f"Gauge Location {gauge_id}"
+        plotfigure = plotdata.new_plotfigure(name=fig_name)
+        plotfigure.show = True
+
+        # Set up for axes in this figure:
+        plotaxes = plotfigure.new_plotaxes()
+        plotaxes.title = fig_name
+        plotaxes.scaled = True
+        plotaxes.xlimits = gauge_loc[0]
+        plotaxes.ylimits = gauge_loc[1]
+        plotaxes.afteraxes = gauge_location_afteraxes
+        surgeplot.add_surface_elevation(plotaxes, bounds=surface_limits)
+        surgeplot.add_land(plotaxes, bounds=[0.0, 20.0])
+        plotaxes.plotitem_dict['surface'].amr_patchedges_show = [1] * 10
+        # plotaxes.plotitem_dict['surface'].pcolor_cmap = surface_cmap
+        plotaxes.plotitem_dict['land'].amr_patchedges_show = [1] * 10
 
     # -----------------------------------------
     # Parameters used only when creating html and/or latex hardcopy
@@ -314,10 +329,10 @@ def setplot(plotdata=None):
     plotdata.printfigs = True                # print figures
     plotdata.print_format = 'png'            # file format
     plotdata.print_framenos = 'all'          # list of frames to print
-    plotdata.print_gaugenos = 'all'   # list of gauges to print
+    plotdata.print_gaugenos = 'all'          # list of gauges to print
     plotdata.print_fignos = 'all'            # list of figures to print
     plotdata.html = True                     # create html files of plots?
-    plotdata.latex = False                    # create latex file of plots?
+    plotdata.latex = False                   # create latex file of plots?
     plotdata.latex_figsperline = 2           # layout of plots
     plotdata.latex_framesperline = 1         # layout of plots
     plotdata.latex_makepdf = False           # also run pdflatex?

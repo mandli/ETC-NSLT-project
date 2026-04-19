@@ -9,17 +9,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 
-def plot_fields(path, movie=True, force=False):
+def plot_fields(path, dates, movie=True, force=False):
 
     data = xr.open_dataset(path)
     stride = 2
     x = np.mod(data.longitude - 360, 180)[::stride]
     y = data.latitude[::stride]
-    t_range = (np.datetime64("2012-12-25"), np.datetime64("2012-12-30"))
+    t_range = dates
     subset = data.sel(valid_time=slice(*t_range))
     t = (subset.valid_time - t_range[0]) / np.timedelta64(1, 's')
     
-    out_path = Path() / "storm_plots"
+    out_path = Path() / "storm_plots" / path.stem
     out_path.mkdir(exist_ok=True)
 
     xlimits = (80, 130)
@@ -73,5 +73,12 @@ def plot_fields(path, movie=True, force=False):
 
 
 if __name__ == '__main__':
-    path = Path(os.environ['DATA_PATH']) / "ETC_NASA_SLCT" / "f166d10549b1da216d3d9a1a3d9f6af2.nc"
-    plot_fields(path)
+    # path = Path(os.environ['DATA_PATH']) / "ETC_NASA_SLCT" / "old_data" / "f166d10549b1da216d3d9a1a3d9f6af2.nc"
+    # file_names = ["DEC2012_1pt50.nc", "DEC2012_1pt00.nc", "DEC2012_0pt25.nc"]
+    dates = (np.datetime64("2012-12-25"), np.datetime64("2012-12-30"))
+    # file_names = ["NOV2018_0pt25.nc", "NOV2018_1pt00.nc", "NOV2018_1pt50.nc"]
+    # dates = (np.datetime64("2018-11-01"), np.datetime64("2018-11-30"))
+    # for file_name in file_names:
+    #     plot_fields(Path(os.environ['DATA_PATH']) / "ETC_NASA_SLCT" / file_name,
+    #                 dates)
+    plot_fields(Path() / "output.nc", dates)
