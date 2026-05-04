@@ -65,8 +65,6 @@ class ETCJob(Job):
         self.rundata.amrdata.amr_levels_max = self.levels
         self.rundata.geo_data.sea_level = self.sea_level
 
-        self.rundata.clawdata.tfinal = 0.05*24*3600 # 3 days
-
     def write_data_objects(self, path: Path) -> None:
         etc_storm = Storm()
         etc_storm.file_paths.append(self.storm_path)
@@ -101,89 +99,6 @@ class ETCJob(Job):
     
     def __str__(self) -> str:
         return f"{self.prefix}"
-
-# def plot_gauge_comparison(results, experiment):
-#     """Plot gauge comparisons for all jobs"""
-    
-#     # Matplotlib settings
-#     import matplotlib.pyplot as plt
-#     plt.tight_layout()
-
-#     plot_ensemble = clawutil.fullpath_import(
-#                         Path(__file__).parent / "plot_gauge_comparison.py")
-
-#     experiment_path = (Path(os.environ['OUTPUT_PATH']) / experiment).resolve()
-#     figure_path = experiment_path / "gauge_comparisons" / ""
-#     figure_path.mkdir(parents=True, exist_ok=True)
-
-#     # Plotting parameters
-#     times = [[np.datetime64("2012-12-26T00:00"), 
-#                 datetime.datetime(2012, 12, 25, 0, 0), 
-#                 datetime.datetime(2012, 12, 30, 0, 0)],
-#             [np.datetime64("2018-11-14T08:00:00.00"),
-#                 datetime.datetime(2018, 11, 14, 0, 0),
-#                 datetime.datetime(2018, 11, 18, 0, 0)]]
-#     gauges = range(1, 9)
-    
-#     # Create figures and axes
-#     figs = []
-#     axes = []
-#     for i in range(len(times)):
-#         fig, axs = plt.subplots(3, 3)
-#         figs.append(fig)
-#         axes.append(axs)
-    
-#     # Just plot the first result for now
-#     for result in results:
-#         if not result.success:
-#             print(f"Job {result.job} did not complete successfully; skipping gauge comparison.")
-#             continue
-
-#         # Extract storm date from job prefix
-#         storm_date = result.job.storm_path.stem.split("_")[0]
-#         storm_resolution = result.job.storm_path.stem.split("_")[1]
-
-#         # Set landfall time based on storm date
-#         if storm_date == "DEC2012":
-#             landfall_time = np.datetime64("2012-12-26T00:00:00.00")
-#             plot_index = 0
-#         elif storm_date == "NOV2018":
-#             landfall_time = np.datetime64("2018-11-14T08:00:00.00")
-#             plot_index = 1
-#         else:
-#             print(f"Unknown storm date {storm_date}; cannot determine landfall time.")
-#             return
-    
-#         for gauge_number in gauges:
-#             breakpoint()
-#             plot_ensemble.plot_observed(axes[plot_index][gauge_number], gauge_number, times[plot_index])
-#             plot_ensemble.plot_surface(axes[plot_index][gauge_number-1], gauge_number, storm_date, storm_resolution, result.paths.job)
-#             axes[plot_index][gauge_number-1].set_xlabel("Time (days)")
-#             axes[plot_index][gauge_number-1].set_ylabel("Surface Elevation (m)")
-#             gauge_mapping = {1: ('8518750', 'The Battery, NY'),
-#                     2: ('8516945', 'Kings Point, NY'),
-#                     3: ('8510560', 'Montauk, NY'),
-#                     4: ('8467150', 'Bridgeport, CT'),
-#                     5: ('8465705', 'New Haven, CT'),
-#                     6: ('8452660', 'Newport, RI'),
-#                     7: ('8531680', 'Sandy Hook, NJ'),
-#                     8: ('8534720', 'Atlantic City, NJ')}
-
-#             station_id, station_name = gauge_mapping[gauge_number]
-#             axes[plot_index][gauge_number-1].set_title(f"{station_name} ({station_id}) - {storm_date}")
-#             axes[plot_index][gauge_number-1].legend()
-#         figs[plot_index].savefig(figure_path / f"gauge_{storm_date}_surface_comparison.png", dpi=300)
-
-#     # result.job.sea_level
-#     # result.job.scaling
-#     # result.job.levels
-#     # result.job.storm_path
-#     # result.paths.job
-#     # result.paths.log
-#     # result.paths.out
-    
-
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
