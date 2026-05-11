@@ -139,9 +139,9 @@ def main() -> None:
     storm_paths = [base_path / f"{storm_date}_{res}.nc" 
                         for storm_date in storm_dates 
                         for res in resolutions]
-    sea_levels = [0.0]
-    scalings = [1.0]
-    amr_max_levels = [2]
+    sea_levels = [0.0, 1.2]
+    scalings = [1.0, 1.2]
+    amr_max_levels = [1]
 
     # Construct jobs for all combinations of parameters
     jobs = []
@@ -154,39 +154,46 @@ def main() -> None:
                                        sea_level=sea_level,
                                        levels=amr_max_level))
 
-    ctrl = BatchController(
-        jobs=jobs,
-        executor=ParallelExecutor(
-            max_workers=args.max_workers,
-            env={"OMP_NUM_THREADS": str(args.omp_num_threads)},
-        ),
-        experiment="ETC_NASA_SLCT",
-        clobber=ClobberPolicy.SKIP if args.resume else ClobberPolicy.OVERWRITE,
-        )
+                ctrl = BatchController(
+                    jobs=jobs,
+                    executor=ParallelExecutor(
+                        max_workers=args.max_workers,
+                        env={"OMP_NUM_THREADS": str(args.omp_num_threads)},
+                    ),
+                    experiment="ETC_NASA_SLCT",
+                    clobber=ClobberPolicy.SKIP if args.resume else ClobberPolicy.OVERWRITE,
+                    )
 
-    if args.setup_only:
-        paths = ctrl.setup()
-        print(f"Setup complete for {len(paths)} job(s).")
-        return
+                if args.setup_only:
+                    paths = ctrl.setup()
+                    print(f"Setup complete for {len(paths)} job(s).")
+                    return
 
-    results = ctrl.run(wait=True)
+                results = ctrl.run(wait=True)
 
-    n_ok = sum(1 for r in results if r.success)
-    n_fail = sum(1 for r in results if not r.success and r.returncode is not None)
-    print(f"\nCompleted: {n_ok}/{len(results)} successful, {n_fail} failed.")
+                n_ok = sum(1 for r in results if r.success)
+                n_fail = sum(1 for r in results if not r.success and r.returncode is not None)
+                print(f"\nCompleted: {n_ok}/{len(results)} successful, {n_fail} failed.")
 
-    if n_fail:
-        for r in results:
-            if r.returncode is not None and r.returncode != 0:
-                print(f"  FAILED: {r.job.prefix}  (see {r.paths.log})")
+                if n_fail:
+                    for r in results:
+                        if r.returncode is not None and r.returncode != 0:
+                            print(f"  FAILED: {r.job.prefix}  (see {r.paths.log})")
 
-    # Plot gauge comparison for all finished jobs
-    gauge_comparison = clawutil.fullpath_import(Path(__file__).parent 
-                                                / "gauge_comparison.py")
-    gauge_figs_path = Path(os.environ['OUTPUT_PATH']) / ctrl.experiment / "gauge_comparisons"
-    gauge_figs_path.mkdir(parents=True, exist_ok=True)
-    for storm_date in storm_dates:
-        gauge_comparison.plot(results, gauge_figs_path, storm_date)
+                # Plot gauge comparison for all finished jobs - put it into 
+                # shared path
+                gauge_comparison = clawutil.fullpath_import(Path(__file__).parent 
+                                                            / "gauge_comparison.py")
+                prefix = (f"sea{sea_level:.1f}_" + 
+                          f"scale{scaling:.2f}_" + 
+                          f"lev{amr_max_level}")
+                # Only for macos
+                gauge_figs_path = (Path(os.environ['DROPBOX'])
+                                   / "shared_runs"
+                                   / f"{prefix}_gauge_comparisons").resolve()
+                gauge_figs_path.mkdir(parents=True, exist_ok=True)
+                for storm_date in storm_dates:
+                    gauge_comparison.plot(results, gauge_figs_path, storm_date)
 
 if __name__ == "__main__":
     main()

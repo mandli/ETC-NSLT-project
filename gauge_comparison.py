@@ -8,7 +8,7 @@ import numpy as np
 
 from batch import JobResult
 
-import clawpack.pyclaw.gauges
+from clawpack.pyclaw import gauges
 import clawpack.geoclaw.util as geoutil
 
 gauge_mapping = {1: ('8518750', 'The Battery, NY'),
@@ -56,7 +56,8 @@ def plot_observed(ax, gauge_number, times):
     # Fetch data if needed
     date_time, water_level, tide = geoutil.fetch_noaa_tide_data(station_id,
                                                                 begin_date,
-                                                                end_date)
+                                                                end_date,
+                                                                verbose=False)
     
     if water_level is None:
         print("*** Could not fetch gauge {}.".format(station_id))
