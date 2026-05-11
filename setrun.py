@@ -486,13 +486,13 @@ def setgeo(rundata):
     # NJ coast: 25, 24, 20, 19, 16, 13, 12, 7, 8, 3, 4, 0
     # Chesapeake: 21, 22, 23, 18, 17, 15, 14, 11, 10, 9, 6, 5, 4, 2, 1, 0
     # Sandy: range(24, 55)
-    for file_index in range(24, 55):
-        topo_data.topofiles.append([4, 
-                                ncei_base_path / ncei_file_list[file_index]])
-    # Add NJ coast
-    for file_index in [0, 3, 4, 8, 7, 12, 13, 16, 19, 20]:#, 24, 25]:
-        topo_data.topofiles.append([4, 
-                                ncei_base_path / ncei_file_list[file_index]])
+    # for file_index in range(24, 55):
+    #     topo_data.topofiles.append([4, 
+    #                             ncei_base_path / ncei_file_list[file_index]])
+    # # Add NJ coast
+    # for file_index in [0, 3, 4, 8, 7, 12, 13, 16, 19, 20]:#, 24, 25]:
+    #     topo_data.topofiles.append([4, 
+    #                             ncei_base_path / ncei_file_list[file_index]])
 
     # ================a
     #  Set Surge Data
