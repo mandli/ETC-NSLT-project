@@ -5,28 +5,21 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import logging
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
-import datetime
+
 import numpy as np
 
-from batch import  Job, ParallelExecutor, BatchController, ClobberPolicy
+from batch import Job, ParallelExecutor, BatchController, ClobberPolicy, JobResult
 from batch.plot import plot_job
 
-import clawpack.pyclaw.gauges
-import clawpack.geoclaw.util as geoutil
 import clawpack.clawutil.util as clawutil
 from clawpack.geoclaw.surge.storm import Storm
 
-gauge_mapping = {1: ('8518750', 'The Battery, NY'),
-                 2: ('8516945', 'Kings Point, NY'),
-                 3: ('8510560', 'Montauk, NY'),
-                 4: ('8467150', 'Bridgeport, CT'),
-                 5: ('8465705', 'New Haven, CT'),
-                 6: ('8452660', 'Newport, RI'),
-                 7: ('8531680', 'Sandy Hook, NJ'),
-                 8: ('8534720', 'Atlantic City, NJ')}
+import gauge_comparison as gc
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,31 +27,30 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+
 class ETCJob(Job):
 
     def __init__(
-            self, 
+            self,
             storm_path: Path,
             sea_level: float = 0.0,
             scaling: float = 1.0,
             levels: int = 2) -> None:
-            
+
         super().__init__()
 
-        self.prefix = (f"storm{storm_path.stem}_" + 
-                       f"sea{sea_level:.1f}_" + 
-                       f"scale{scaling:.2f}_" + 
+        self.prefix = (f"storm{storm_path.stem}_" +
+                       f"sea{sea_level:.1f}_" +
+                       f"scale{scaling:.2f}_" +
                        f"lev{levels}")
         self.executable = "xgeoclaw"
 
-        # Job parameters
         self.storm_path = storm_path
         self.scaling = scaling
         self.sea_level = sea_level
         self.levels = levels
 
         setrun_path = Path(__file__).parent / "setrun.py"
-
         setrun = clawutil.fullpath_import(setrun_path)
         self.rundata = setrun.setrun()
 
@@ -73,7 +65,7 @@ class ETCJob(Job):
         elif self.storm_path.name.startswith("NOV2018"):
             etc_storm.time_offset = np.datetime64("2018-11-14T08:00:00.00")
         etc_storm.file_format = 'netcdf'
-        etc_storm.scaling = [self.scaling, 1.0] # Only scale wind?
+        etc_storm.scaling = [self.scaling, 1.0]
         etc_storm.window_type = 'custom'
         etc_storm.ramp_width = 2
         etc_storm.window = [-80, 27.5, -62.5, 45]
@@ -84,21 +76,100 @@ class ETCJob(Job):
                         dim_mapping={"t": "valid_time"},
                         var_mapping={"pressure": "msl"},
                         verbose=True)
-        
+
         return super().write_data_objects(path)
 
     def post_run(self, result) -> None:
         plot_job(result, setplot=Path(__file__).parent / "setplot.py")
 
     def __repr__(self) -> str:
-        return (f"ETCJob({self.storm_path}, " +
-                        f"sea_level={self.rundata.geo_data.sea_level}, " 
-                        + f"scaling={self.scaling}, " 
-                        + f"levels={self.rundata.amrdata.amr_levels_max }" +
-                        ")")
-    
+        return (f"ETCJob({self.storm_path}, "
+                f"sea_level={self.rundata.geo_data.sea_level}, "
+                f"scaling={self.scaling}, "
+                f"levels={self.rundata.amrdata.amr_levels_max})")
+
     def __str__(self) -> str:
         return f"{self.prefix}"
+
+
+@dataclass
+class RunGroup:
+    """Fixed-parameter group whose jobs vary only by resolution.
+
+    These are the jobs compared together in a single gauge-comparison plot.
+    """
+    storm_date: str
+    sea_level: float
+    scaling: float
+    amr_max_level: int
+    # time_dilation: float          # next step
+    jobs: list = field(default_factory=list)
+
+    def label(self) -> str:
+        return (f"{self.storm_date}"
+                f"_sea{self.sea_level:.1f}"
+                f"_scale{self.scaling:.2f}"
+                f"_lev{self.amr_max_level}")
+        # f"_dil{self.time_dilation:.2f}"  # next step
+
+
+def build_run_groups(
+    storms_path: Path,
+    storm_dates: list[str],
+    resolutions: list[str],
+    sea_levels: list[float],
+    scalings: list[float],
+    amr_max_levels: list[int],
+    # time_dilations: list[float],  # next step
+) -> tuple[list[Job], list[RunGroup]]:
+    """Build all jobs and group them for gauge comparison.
+
+    Jobs within a group share all parameters except resolution, which is
+    the dimension compared in gauge plots.  The flat job list is submitted
+    to a single controller so the worker queue stays full.
+    """
+    all_jobs: list[Job] = []
+    groups: list[RunGroup] = []
+
+    for sea_level, amr_max_level, scaling, storm_date in itertools.product(
+            sea_levels, amr_max_levels, scalings, storm_dates):
+        # time_dilation,            # next step
+        group = RunGroup(storm_date, sea_level, scaling, amr_max_level)
+        for res in resolutions:
+            job = ETCJob(storms_path / f"{storm_date}_{res}.nc",
+                         sea_level=sea_level,
+                         scaling=scaling,
+                         levels=amr_max_level)
+            all_jobs.append(job)
+            group.jobs.append(job)
+        groups.append(group)
+
+    return all_jobs, groups
+
+
+def report_results(results: list[JobResult]) -> None:
+    n_ok = sum(1 for r in results if r.success)
+    n_fail = sum(1 for r in results if not r.success and r.returncode is not None)
+    print(f"\nCompleted: {n_ok}/{len(results)} successful, {n_fail} failed.")
+    for r in results:
+        if r.returncode is not None and r.returncode != 0:
+            print(f"  FAILED: {r.job.prefix}  (see {r.paths.log})")
+
+
+def plot_gauge_comparisons(
+    results: list[JobResult],
+    groups: list[RunGroup],
+    gauge_figs_path: Path,
+) -> None:
+    """Call gauge_comparison.plot for each group using only that group's results."""
+    job_to_result = {r.job: r for r in results}
+    for group in groups:
+        group_results = [job_to_result[job] for job in group.jobs
+                         if job in job_to_result]
+        if not group_results:
+            continue
+        gc.plot(group_results, gauge_figs_path / group.label(), group.storm_date)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -132,68 +203,46 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Problem setup
-    base_path = args.storms_path.resolve()
-    resolutions = ["0pt25", "1pt00", "1pt50"]
     storm_dates = ["DEC2012", "NOV2018"]
-    storm_paths = [base_path / f"{storm_date}_{res}.nc" 
-                        for storm_date in storm_dates 
-                        for res in resolutions]
-    sea_levels = [0.0, 1.2]
-    scalings = [1.0, 1.2]
-    amr_max_levels = [1]
+    resolutions = ["0pt25", "1pt00", "1pt50"]
+    sea_levels = [0.0]
+    scalings = [1.0]
+    amr_max_levels = [2]
+    # time_dilations = [1.0]        # next step
 
-    # Construct jobs for all combinations of parameters
-    jobs = []
-    for sea_level in sea_levels:
-        for amr_max_level in amr_max_levels:
-            for scaling in scalings:
-                for storm_path in storm_paths:
-                    jobs.append(ETCJob(storm_path, 
-                                       scaling=scaling, 
-                                       sea_level=sea_level,
-                                       levels=amr_max_level))
+    jobs, groups = build_run_groups(
+        args.storms_path.resolve(),
+        storm_dates,
+        resolutions,
+        sea_levels,
+        scalings,
+        amr_max_levels,
+        # time_dilations,           # next step
+    )
 
-                ctrl = BatchController(
-                    jobs=jobs,
-                    executor=ParallelExecutor(
-                        max_workers=args.max_workers,
-                        env={"OMP_NUM_THREADS": str(args.omp_num_threads)},
-                    ),
-                    experiment="ETC_NASA_SLCT",
-                    clobber=ClobberPolicy.SKIP if args.resume else ClobberPolicy.OVERWRITE,
-                    )
+    ctrl = BatchController(
+        jobs=jobs,
+        executor=ParallelExecutor(
+            max_workers=args.max_workers,
+            env={"OMP_NUM_THREADS": str(args.omp_num_threads)},
+        ),
+        experiment="ETC_NASA_SLCT",
+        clobber=ClobberPolicy.SKIP if args.resume else ClobberPolicy.OVERWRITE,
+    )
 
                 if args.setup_only:
                     paths = ctrl.setup()
                     print(f"Setup complete for {len(paths)} job(s).")
                     return
 
-                results = ctrl.run(wait=True)
+    results = ctrl.run(wait=True)
+    report_results(results)
 
-                n_ok = sum(1 for r in results if r.success)
-                n_fail = sum(1 for r in results if not r.success and r.returncode is not None)
-                print(f"\nCompleted: {n_ok}/{len(results)} successful, {n_fail} failed.")
+    gauge_figs_path = (Path(os.environ['OUTPUT_PATH'])
+                       / ctrl.experiment / "gauge_comparisons")
+    gauge_figs_path.mkdir(parents=True, exist_ok=True)
+    plot_gauge_comparisons(results, groups, gauge_figs_path)
 
-                if n_fail:
-                    for r in results:
-                        if r.returncode is not None and r.returncode != 0:
-                            print(f"  FAILED: {r.job.prefix}  (see {r.paths.log})")
-
-                # Plot gauge comparison for all finished jobs - put it into 
-                # shared path
-                gauge_comparison = clawutil.fullpath_import(Path(__file__).parent 
-                                                            / "gauge_comparison.py")
-                prefix = (f"sea{sea_level:.1f}_" + 
-                          f"scale{scaling:.2f}_" + 
-                          f"lev{amr_max_level}")
-                # Only for macos
-                gauge_figs_path = (Path(os.environ['DROPBOX'])
-                                   / "shared_runs"
-                                   / f"{prefix}_gauge_comparisons").resolve()
-                gauge_figs_path.mkdir(parents=True, exist_ok=True)
-                for storm_date in storm_dates:
-                    gauge_comparison.plot(results, gauge_figs_path, storm_date)
 
 if __name__ == "__main__":
     main()
