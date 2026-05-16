@@ -230,10 +230,10 @@ def main() -> None:
         clobber=ClobberPolicy.SKIP if args.resume else ClobberPolicy.OVERWRITE,
     )
 
-                if args.setup_only:
-                    paths = ctrl.setup()
-                    print(f"Setup complete for {len(paths)} job(s).")
-                    return
+    if args.setup_only:
+        paths = ctrl.setup()
+        print(f"Setup complete for {len(paths)} job(s).")
+        return
 
     results = ctrl.run(wait=True)
     report_results(results)

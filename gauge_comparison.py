@@ -33,7 +33,7 @@ def plot_surface(ax, gauge_id, output_path, res, dry_tolerance=1e-16):
     print(f"Loading data from: {output_path}")
 
     # Load gauge data
-    gauge = clawpack.pyclaw.gauges.GaugeSolution(gauge_id, output_path)
+    gauge = gauges.GaugeSolution(gauge_id, output_path)
     time = gauge.t / (24 * 60**2)  # Convert to days
     surface = np.ma.masked_where(np.abs(gauge.q[0, :]) < dry_tolerance,
                               gauge.q[3, :])
