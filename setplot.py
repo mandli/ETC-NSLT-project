@@ -218,27 +218,30 @@ def setplot(plotdata=None):
     # ========================================================================
     #  Figures for gauges
     # ========================================================================
-    def plot_observed(current_data):
+    gauge_mapping = {1: ('8518750', 'The Battery, NY'),
+                        2: ('8516945', 'Kings Point, NY'),
+                        3: ('8510560', 'Montauk, NY'),
+                        4: ('8467150', 'Bridgeport, CT'),
+                        5: ('8465705', 'New Haven, CT'),
+                        6: ('8452660', 'Newport, RI'),
+                        7: ('8531680', 'Sandy Hook, NJ'),
+                        8: ('8534720', 'Atlantic City, NJ')}
+    def plot_observed(current_data, storm):
         """Fetch and plot gauge data for gauges used."""
 
         # Map GeoClaw gauge number to NOAA gauge number and location/name
-
-        gauge_mapping = {1: ('8518750', 'The Battery, NY'),
-                         2: ('8516945', 'Kings Point, NY'),
-                         3: ('8510560', 'Montauk, NY'),
-                         4: ('8467150', 'Bridgeport, CT'),
-                         5: ('8465705', 'New Haven, CT'),
-                         6: ('8452660', 'Newport, RI'),
-                         7: ('8531680', 'Sandy Hook, NJ'),
-                         8: ('8534720', 'Atlantic City, NJ')}
-
         station_id, station_name = gauge_mapping[current_data.gaugesoln.id]
-        landfall_time = np.datetime64("2012-12-26T00:00")
-        begin_date = datetime.datetime(2012, 12, 25, 0, 0)
-        end_date = datetime.datetime(2012, 12, 30, 0, 0)
-        # landfall_time = np.datetime64("2018-11-14T08:00:00.00")
-        # begin_date = datetime.datetime(2018, 11, 14, 0, 0)
-        # end_date = datetime.datetime(2018, 11, 18, 0, 0)
+
+        if storm.file_paths[0].name.startswith("DEC2012"):
+            landfall_time = np.datetime64("2012-12-26T00:00")
+            begin_date = datetime.datetime(2012, 12, 25, 0, 0)
+            end_date = datetime.datetime(2012, 12, 30, 0, 0)
+        elif storm.file_paths[0].name.startswith("NOV2018"):
+            landfall_time = np.datetime64("2018-11-14T08:00:00.00")
+            begin_date = datetime.datetime(2018, 11, 14, 0, 0)
+            end_date = datetime.datetime(2018, 11, 18, 0, 0)
+        else:
+            raise ValueError(f"Unknown storm {storm.name}")
 
         # Fetch data if needed
         date_time, water_level, tide = geoutil.fetch_noaa_tide_data(station_id,
@@ -276,7 +279,7 @@ def setplot(plotdata=None):
     plotaxes.title = "Surface"
     plotaxes.ylabel = "Surface (m)"
     plotaxes.time_label = "Days relative to 2012-12-26 00:00 UTC"
-    plotaxes.afteraxes = plot_observed
+    plotaxes.afteraxes = lambda cd: plot_observed(cd, storm)
 
     plotitem = plotaxes.new_plotitem(plot_type='1d_plot')
     plotitem.plot_var = surgeplot.gauge_surface
@@ -285,6 +288,64 @@ def setplot(plotdata=None):
     plotitem = plotaxes.new_plotitem(plot_type='1d_plot')
     plotitem.plot_var = surgeplot.gauge_dry_regions
     plotitem.kwargs = {"color":'lightcoral', "linewidth":5, "label": "dry"}
+
+    # Plot wind and pressure at each gauge
+    def storm_gauge_afteraxes(cd, storm):
+        # Map GeoClaw gauge number to NOAA gauge number and location/name
+        station_id, station_name = gauge_mapping[cd.gaugesoln.id]
+
+        if storm.file_paths[0].name.startswith("DEC2012"):
+            landfall_time = np.datetime64("2012-12-26T00:00")
+            begin_date = datetime.datetime(2012, 12, 25, 0, 0)
+            end_date = datetime.datetime(2012, 12, 30, 0, 0)
+        elif storm.file_paths[0].name.startswith("NOV2018"):
+            landfall_time = np.datetime64("2018-11-14T08:00:00.00")
+            begin_date = datetime.datetime(2018, 11, 14, 0, 0)
+            end_date = datetime.datetime(2018, 11, 18, 0, 0)
+        else:
+            raise ValueError(f"Unknown storm {storm.name}")
+        
+        # Convert to seconds relative to landfall
+        # t = (cd.gaugesoln.t - landfall_time) / np.timedelta64(1, 's')
+        t = cd.gaugesoln.t
+        t /= (24 * 60**2)
+
+        w_ax = plt.gca()
+        color ="tab:blue"
+        w_ax.plot(t, surgeplot.gauge_wind(cd), label="wind", color=color)
+        w_ax.set_ylabel("Wind (m/s)", color=color)
+        w_ax.set_ylim(wind_limits)
+        w_ax.tick_params(axis='y', labelcolor=color)
+        
+        P_ax = w_ax.twinx()
+        color = "tab:red"
+        P_ax.set_ylabel("Pressure (mbar)", color=color)
+        P_ax.plot(t, surgeplot.gauge_pressure(cd) * 1e-2, label="pressure", color=color)
+        P_ax.set_ylim(pressure_limits)
+        P_ax.tick_params(axis='y', labelcolor=color)
+
+        w_ax.set_title(f"Storm Fileds at {station_name}")
+
+        plt.gcf().tight_layout()
+
+    plotfigure = plotdata.new_plotfigure(name='Gauge Wind', figno=301,
+                                         type='each_gauge')
+    plotfigure.show = True
+    plotfigure.clf_each_gauge = True
+    plotfigure.kwargs = {"figsize": [6.4 * 1.2,
+                                     4.8 * 1.0]}
+
+    plotaxes = plotfigure.new_plotaxes()
+    plotaxes.time_scale = 1 / (24 * 60**2)
+    plotaxes.grid = True
+    plotaxes.xlimits = [0, 3]
+    # plotaxes.ylimits = [-0.5, 2.0]
+    # plotaxes.title = "Storm Fields at "
+    # plotaxes.ylabel = "Wind Speed (m/s)"
+    plotaxes.time_label = "Days relative to 2012-12-26 00:00 UTC"
+
+    # TODO: Have a dual axis for plotting on the y-axis
+    plotaxes.afteraxes = lambda cd: storm_gauge_afteraxes(cd, storm)
 
     #
     #  Gauge Location Plots
@@ -306,6 +367,7 @@ def setplot(plotdata=None):
             fig_name = "All Gauge Locations"
         else:
             fig_name = f"Gauge Location {gauge_id}"
+        
         plotfigure = plotdata.new_plotfigure(name=fig_name)
         plotfigure.show = True
 
