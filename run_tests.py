@@ -35,19 +35,23 @@ class ETCJob(Job):
             storm_path: Path,
             sea_level: float = 0.0,
             scaling: float = 1.0,
-            levels: int = 2) -> None:
+            levels: int = 2,
+            time_dilation: float = 1.0,
+            ) -> None:
 
         super().__init__()
 
         self.prefix = (f"storm{storm_path.stem}_" +
                        f"sea{sea_level:.1f}_" +
                        f"scale{scaling:.2f}_" +
-                       f"lev{levels}")
+                       f"lev{levels}_" +
+                       f"dil{time_dilation:.2f}")
         self.executable = "xgeoclaw"
 
         self.storm_path = storm_path
         self.scaling = scaling
         self.sea_level = sea_level
+        self.time_dilation = time_dilation
         self.levels = levels
 
         setrun_path = Path(__file__).parent / "setrun.py"
@@ -69,6 +73,7 @@ class ETCJob(Job):
         etc_storm.window_type = 'custom'
         etc_storm.ramp_width = 2
         etc_storm.window = [-80, 27.5, -62.5, 45]
+        etc_storm.time_dilation = self.time_dilation
 
         self.rundata.surge_data.storm_file = path / f"{self.prefix}.storm"
         etc_storm.write(self.rundata.surge_data.storm_file,
@@ -86,7 +91,8 @@ class ETCJob(Job):
         return (f"ETCJob({self.storm_path}, "
                 f"sea_level={self.rundata.geo_data.sea_level}, "
                 f"scaling={self.scaling}, "
-                f"levels={self.rundata.amrdata.amr_levels_max})")
+                f"levels={self.rundata.amrdata.amr_levels_max}, "
+                f"time_dilation={self.time_dilation})")
 
     def __str__(self) -> str:
         return f"{self.prefix}"
@@ -102,16 +108,16 @@ class RunGroup:
     sea_level: float
     scaling: float
     amr_max_level: int
-    # time_dilation: float          # next step
+    time_dilation: float
     jobs: list = field(default_factory=list)
 
     def label(self) -> str:
         return (f"{self.storm_date}"
                 f"_sea{self.sea_level:.1f}"
                 f"_scale{self.scaling:.2f}"
-                f"_lev{self.amr_max_level}")
-        # f"_dil{self.time_dilation:.2f}"  # next step
-
+                f"_lev{self.amr_max_level}"
+                f"_dil{self.time_dilation:.2f}"
+                )
 
 def build_run_groups(
     storms_path: Path,
@@ -120,7 +126,7 @@ def build_run_groups(
     sea_levels: list[float],
     scalings: list[float],
     amr_max_levels: list[int],
-    # time_dilations: list[float],  # next step
+    time_dilations: list[float],
 ) -> tuple[list[Job], list[RunGroup]]:
     """Build all jobs and group them for gauge comparison.
 
@@ -131,15 +137,15 @@ def build_run_groups(
     all_jobs: list[Job] = []
     groups: list[RunGroup] = []
 
-    for sea_level, amr_max_level, scaling, storm_date in itertools.product(
-            sea_levels, amr_max_levels, scalings, storm_dates):
-        # time_dilation,            # next step
-        group = RunGroup(storm_date, sea_level, scaling, amr_max_level)
+    for sea_level, amr_max_level, scaling, storm_date, time_dilation in itertools.product(
+            sea_levels, amr_max_levels, scalings, storm_dates, time_dilations):
+        group = RunGroup(storm_date, sea_level, scaling, amr_max_level, time_dilation)
         for res in resolutions:
             job = ETCJob(storms_path / f"{storm_date}_{res}.nc",
                          sea_level=sea_level,
                          scaling=scaling,
-                         levels=amr_max_level)
+                         levels=amr_max_level,
+                         time_dilation=time_dilation)
             all_jobs.append(job)
             group.jobs.append(job)
         groups.append(group)
@@ -204,11 +210,12 @@ def main() -> None:
     args = parser.parse_args()
 
     storm_dates = ["DEC2012", "NOV2018"]
-    resolutions = ["0pt25", "1pt00", "1pt50"]
+    # resolutions = ["0pt25", "1pt00", "1pt50"]
+    resolutions = ["1pt00"]
     sea_levels = [0.0]
     scalings = [1.0]
-    amr_max_levels = [2]
-    # time_dilations = [1.0]        # next step
+    amr_max_levels = [1]
+    time_dilations = [0.8, 1.0, 1.2]
 
     jobs, groups = build_run_groups(
         args.storms_path.resolve(),
@@ -217,7 +224,7 @@ def main() -> None:
         sea_levels,
         scalings,
         amr_max_levels,
-        # time_dilations,           # next step
+        time_dilations,
     )
 
     ctrl = BatchController(
