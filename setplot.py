@@ -63,6 +63,33 @@ def setplot(plotdata=None):
 
     storm = stormtools.Storm(surge_data.storm_file, file_format="data")
 
+    # Per-storm reference time (t=0) and NOAA fetch window, keyed by the
+    # storm file's name prefix.  ``landfall_time`` must match the
+    # ``time_offset`` set for the storm in setrun.py.
+    storm_times = {
+        "DEC1992": (np.datetime64("1992-12-08T00:00:00.00"),
+                    datetime.datetime(1992, 12, 8, 0, 0),
+                    datetime.datetime(1992, 12, 16, 0, 0)),
+        "DEC2012": (np.datetime64("2012-12-26T00:00"),
+                    datetime.datetime(2012, 12, 25, 0, 0),
+                    datetime.datetime(2012, 12, 30, 0, 0)),
+        "NOV2018": (np.datetime64("2018-11-14T08:00:00.00"),
+                    datetime.datetime(2018, 11, 14, 0, 0),
+                    datetime.datetime(2018, 11, 18, 0, 0)),
+    }
+
+    def get_storm_times(storm):
+        name = storm.file_paths[0].name
+        for prefix, times in storm_times.items():
+            if name.startswith(prefix):
+                return times
+        raise ValueError(f"Unknown storm {storm.name}")
+
+    landfall_time, _begin_date, _end_date = get_storm_times(storm)
+    time_label = ("Days relative to "
+                  + np.datetime_as_string(landfall_time, unit='m').replace("T", " ")
+                  + " UTC")
+
     # Load storm track
     track = surgeplot.track_data(os.path.join(plotdata.outdir, 'fort.track'))
 
@@ -77,8 +104,8 @@ def setplot(plotdata=None):
     surface_limits = [-1.0 + physics.sea_level, 1.0 + physics.sea_level]
     # surface_limits = [0.0, 1.0]
     speed_limits = [0.0, 2.0]
-    wind_limits = [0, 30]
-    pressure_limits = [980, 1013]
+    wind_limits = (0, 30)
+    pressure_limits = (980, 1013)
     friction_bounds = [0.01, 0.04]
 
     # ==========================================================================
@@ -232,16 +259,7 @@ def setplot(plotdata=None):
         # Map GeoClaw gauge number to NOAA gauge number and location/name
         station_id, station_name = gauge_mapping[current_data.gaugesoln.id]
 
-        if storm.file_paths[0].name.startswith("DEC2012"):
-            landfall_time = np.datetime64("2012-12-26T00:00")
-            begin_date = datetime.datetime(2012, 12, 25, 0, 0)
-            end_date = datetime.datetime(2012, 12, 30, 0, 0)
-        elif storm.file_paths[0].name.startswith("NOV2018"):
-            landfall_time = np.datetime64("2018-11-14T08:00:00.00")
-            begin_date = datetime.datetime(2018, 11, 14, 0, 0)
-            end_date = datetime.datetime(2018, 11, 18, 0, 0)
-        else:
-            raise ValueError(f"Unknown storm {storm.name}")
+        landfall_time, begin_date, end_date = get_storm_times(storm)
 
         # Fetch data if needed
         date_time, water_level, tide = geoutil.fetch_noaa_tide_data(station_id,
@@ -278,7 +296,7 @@ def setplot(plotdata=None):
     plotaxes.ylimits = [-0.5, 2.0]
     plotaxes.title = "Surface"
     plotaxes.ylabel = "Surface (m)"
-    plotaxes.time_label = "Days relative to 2012-12-26 00:00 UTC"
+    plotaxes.time_label = time_label
     plotaxes.afteraxes = lambda cd: plot_observed(cd, storm)
 
     plotitem = plotaxes.new_plotitem(plot_type='1d_plot')
@@ -292,19 +310,8 @@ def setplot(plotdata=None):
     # Plot wind and pressure at each gauge
     def storm_gauge_afteraxes(cd, storm):
         # Map GeoClaw gauge number to NOAA gauge number and location/name
-        station_id, station_name = gauge_mapping[cd.gaugesoln.id]
+        station_name = gauge_mapping[cd.gaugesoln.id][1]
 
-        if storm.file_paths[0].name.startswith("DEC2012"):
-            landfall_time = np.datetime64("2012-12-26T00:00")
-            begin_date = datetime.datetime(2012, 12, 25, 0, 0)
-            end_date = datetime.datetime(2012, 12, 30, 0, 0)
-        elif storm.file_paths[0].name.startswith("NOV2018"):
-            landfall_time = np.datetime64("2018-11-14T08:00:00.00")
-            begin_date = datetime.datetime(2018, 11, 14, 0, 0)
-            end_date = datetime.datetime(2018, 11, 18, 0, 0)
-        else:
-            raise ValueError(f"Unknown storm {storm.name}")
-        
         # Convert to seconds relative to landfall
         # t = (cd.gaugesoln.t - landfall_time) / np.timedelta64(1, 's')
         t = cd.gaugesoln.t
@@ -316,15 +323,21 @@ def setplot(plotdata=None):
         w_ax.set_ylabel("Wind (m/s)", color=color)
         w_ax.set_ylim(wind_limits)
         w_ax.tick_params(axis='y', labelcolor=color)
-        
+
         P_ax = w_ax.twinx()
         color = "tab:red"
+        pressure = surgeplot.gauge_pressure(cd) * 1e-2
         P_ax.set_ylabel("Pressure (mbar)", color=color)
-        P_ax.plot(t, surgeplot.gauge_pressure(cd) * 1e-2, label="pressure", color=color)
-        P_ax.set_ylim(pressure_limits)
+        P_ax.plot(t, pressure, label="pressure", color=color)
+        # Scale the pressure axis to the data (with a small margin) rather than
+        # a fixed window: ETC storms span a wide pressure range and can run well
+        # above the tropical-storm default, which would otherwise clip the curve.
+        p_min, p_max = np.min(pressure), np.max(pressure)
+        p_pad = max(1.0, 0.05 * (p_max - p_min))
+        P_ax.set_ylim(p_min - p_pad, p_max + p_pad)
         P_ax.tick_params(axis='y', labelcolor=color)
 
-        w_ax.set_title(f"Storm Fileds at {station_name}")
+        w_ax.set_title(f"Storm Fields at {station_name}")
 
         plt.gcf().tight_layout()
 
@@ -338,8 +351,8 @@ def setplot(plotdata=None):
     plotaxes = plotfigure.new_plotaxes()
     plotaxes.time_scale = 1 / (24 * 60**2)
     plotaxes.grid = True
-    plotaxes.xlimits = [0, 3]
-    plotaxes.time_label = "Days relative to 2012-12-26 00:00 UTC"
+    # plotaxes.xlimits = [0, 3]
+    plotaxes.time_label = time_label
     plotaxes.afteraxes = lambda cd: storm_gauge_afteraxes(cd, storm)
 
     #
@@ -352,7 +365,7 @@ def setplot(plotdata=None):
                                         format_string='ko', add_labels=True)
 
     gauge_locations = {0: [[-75, -70], [38, 42]]}
-    dx = 0.125
+    # dx = 0.125
     # for gauge in gauge_data.gauges:
     #     x, y = gauge[1:3]
     #     gauge_locations[gauge[0]] = [[x-dx, x+dx], [y-dx, y+dx]]

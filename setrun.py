@@ -517,9 +517,11 @@ def setgeo(rundata):
     # storm_path = (Path(os.environ['DATA_PATH']) / "storms" / "ETC_NASA_SLCT"
     #                           / "NOV2018_0pt25.nc").resolve()
     # etc_storm.time_offset = np.datetime64("2018-11-14T08:00:00.00")
+    # 2012-12-26T00:00 -> 12-30T23:00 (4 days)
     # storm_path = (Path(os.environ['DATA_PATH']) / "storms" / "ETC_NASA_SLCT"
     #                           / "DEC2012_0pt25.nc").resolve()
     # etc_storm.time_offset = np.datetime64("2012-12-26")
+    # 1992-12-08T00:00 -> 12-16T23:00 (8 days)
     storm_path = (Path(os.environ['DATA_PATH']) / "storms" / "ETC_NASA_SLCT"
                               / "DEC1992_0pt25.nc").resolve()
     etc_storm.time_offset = np.datetime64("1992-12-08T00:00:00.00")

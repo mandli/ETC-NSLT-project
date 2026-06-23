@@ -67,10 +67,13 @@ class ETCJob(Job):
         etc_storm.file_paths.append(self.storm_path)
         if self.storm_path.name.startswith("DEC2012"):
             etc_storm.time_offset = np.datetime64("2012-12-26T00:00:00.00")
+            self.rundata.clawdata.tfinal = 4.0 * 24.0 * 3600.0  # 4 days in seconds
         elif self.storm_path.name.startswith("NOV2018"):
             etc_storm.time_offset = np.datetime64("2018-11-14T08:00:00.00")
+            self.rundata.clawdata.tfinal = 4.0 * 24.0 * 3600.0  # 4 days in seconds
         elif self.storm_path.name.startswith("DEC1992"):
             etc_storm.time_offset = np.datetime64("1992-12-08T00:00:00.00")
+            self.rundata.clawdata.tfinal = 8.0 * 24.0 * 3600.0  # 8 days in seconds
         etc_storm.file_format = 'netcdf'
         etc_storm.scaling = [self.scaling, 1.0]
         etc_storm.ramp_width = 2

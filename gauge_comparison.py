@@ -21,8 +21,11 @@ gauge_mapping = {1: ('8518750', 'The Battery, NY'),
                  7: ('8531680', 'Sandy Hook, NJ'),
                  8: ('8534720', 'Atlantic City, NJ')}
 
-times = {"DEC2012": [np.datetime64("2012-12-26T00:00"), 
-                        datetime.datetime(2012, 12, 25, 0, 0), 
+times = {"DEC1992": [np.datetime64("1992-12-08T00:00:00.00"),
+                        datetime.datetime(1992, 12, 8, 0, 0),
+                        datetime.datetime(1992, 12, 16, 0, 0)],
+         "DEC2012": [np.datetime64("2012-12-26T00:00"),
+                        datetime.datetime(2012, 12, 25, 0, 0),
                         datetime.datetime(2012, 12, 30, 0, 0)],
          "NOV2018": [np.datetime64("2018-11-14T08:00:00.00"),
                         datetime.datetime(2018, 11, 14, 0, 0),
