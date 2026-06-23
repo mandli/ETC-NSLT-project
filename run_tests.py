@@ -180,13 +180,17 @@ def build_styles(jobs: list["ETCJob"]) -> tuple[list[dict], list[dict]]:
 def build_run_groups(
     storms_path: Path,
     storm_dates: list[str],
-    resolutions: list[str],
+    resolutions: dict[str, list[str]],
     sea_levels: list[float],
     scalings: list[float],
     amr_max_levels: list[int],
     time_dilations: list[float],
 ) -> tuple[list[Job], list[RunGroup]]:
     """Build all jobs and group them by storm for gauge comparison.
+
+    ``resolutions`` maps each storm date to the resolutions available for it,
+    since not every storm has every resolution.  Storm files that do not exist
+    on disk are skipped with a warning rather than failing mid-run.
 
     All jobs for a storm share one group and are overlaid on the same gauge
     plots.  The flat job list is submitted to a single controller so the
@@ -195,15 +199,21 @@ def build_run_groups(
     all_jobs: list[Job] = []
     groups: dict[str, RunGroup] = {sd: RunGroup(sd) for sd in storm_dates}
 
-    for storm_date, sea_level, amr_max_level, scaling, time_dilation, res in itertools.product(
-            storm_dates, sea_levels, amr_max_levels, scalings, time_dilations, resolutions):
-        job = ETCJob(storms_path / f"{storm_date}_{res}.nc",
-                     sea_level=sea_level,
-                     scaling=scaling,
-                     levels=amr_max_level,
-                     time_dilation=time_dilation)
-        all_jobs.append(job)
-        groups[storm_date].jobs.append(job)
+    for storm_date in storm_dates:
+        for sea_level, amr_max_level, scaling, time_dilation, res in itertools.product(
+                sea_levels, amr_max_levels, scalings, time_dilations,
+                resolutions.get(storm_date, [])):
+            storm_file = storms_path / f"{storm_date}_{res}.nc"
+            if not storm_file.exists():
+                logging.warning("Storm file not found, skipping: %s", storm_file)
+                continue
+            job = ETCJob(storm_file,
+                         sea_level=sea_level,
+                         scaling=scaling,
+                         levels=amr_max_level,
+                         time_dilation=time_dilation)
+            all_jobs.append(job)
+            groups[storm_date].jobs.append(job)
 
     return all_jobs, list(groups.values())
 
@@ -279,8 +289,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    storm_dates = ["DEC1992","DEC2012", "NOV2018"]
-    resolutions = ["0pt25", "1pt00", "1pt50"]
+    storm_dates = ["DEC1992", "DEC2012", "NOV2018"]
+    # Resolutions available per storm — not every storm has every resolution
+    # (DEC1992 currently only has 0pt25 data).
+    resolutions = {
+        "DEC1992": ["0pt25"],
+        "DEC2012": ["0pt25", "1pt00", "1pt50"],
+        "NOV2018": ["0pt25", "1pt00", "1pt50"],
+    }
     # sea_levels = [0.0, 0.2, 0.4]
     sea_levels = [0.0]
     # scalings = [0.8, 1.0, 1.2]

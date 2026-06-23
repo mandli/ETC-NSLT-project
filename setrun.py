@@ -265,7 +265,7 @@ def setrun(claw_pkg='geoclaw'):
     amrdata = rundata.amrdata
 
     # max number of refinement levels:
-    amrdata.amr_levels_max = 1
+    amrdata.amr_levels_max = 3
 
     amrdata.refinement_ratios_x = [2, 2, 2, 3, 3, 3, 4, 4]
     amrdata.refinement_ratios_y = [2, 2, 2, 3, 3, 3, 4, 4]
