@@ -339,12 +339,7 @@ def setplot(plotdata=None):
     plotaxes.time_scale = 1 / (24 * 60**2)
     plotaxes.grid = True
     plotaxes.xlimits = [0, 3]
-    # plotaxes.ylimits = [-0.5, 2.0]
-    # plotaxes.title = "Storm Fields at "
-    # plotaxes.ylabel = "Wind Speed (m/s)"
     plotaxes.time_label = "Days relative to 2012-12-26 00:00 UTC"
-
-    # TODO: Have a dual axis for plotting on the y-axis
     plotaxes.afteraxes = lambda cd: storm_gauge_afteraxes(cd, storm)
 
     #
