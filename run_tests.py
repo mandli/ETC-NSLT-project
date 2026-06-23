@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from batch import Job, ParallelExecutor, BatchController, ClobberPolicy, JobResult
+from batch import JobPaths
 from batch.plot import plot_job
 
 import clawpack.clawutil.util as clawutil
@@ -68,17 +69,18 @@ class ETCJob(Job):
             etc_storm.time_offset = np.datetime64("2012-12-26T00:00:00.00")
         elif self.storm_path.name.startswith("NOV2018"):
             etc_storm.time_offset = np.datetime64("2018-11-14T08:00:00.00")
+        elif self.storm_path.name.startswith("DEC1992"):
+            etc_storm.time_offset = np.datetime64("1992-12-08T00:00:00.00")
         etc_storm.file_format = 'netcdf'
         etc_storm.scaling = [self.scaling, 1.0]
-        etc_storm.window_type = 'custom'
         etc_storm.ramp_width = 2
-        etc_storm.window = [-80, 27.5, -62.5, 45]
-        etc_storm.time_dilation = self.time_dilation
+        # crop_extent = [lon0, lon1, lat0, lat1]
+        etc_storm.crop_extent = [-80, -62.5, 27.5, 45]
+        etc_storm.storm_time_scale = self.time_dilation
 
         self.rundata.surge_data.storm_file = path / f"{self.prefix}.storm"
         etc_storm.write(self.rundata.surge_data.storm_file,
                         file_format='data',
-                        dim_mapping={"t": "valid_time"},
                         var_mapping={"pressure": "msl"},
                         verbose=True)
 
@@ -100,24 +102,80 @@ class ETCJob(Job):
 
 @dataclass
 class RunGroup:
-    """Fixed-parameter group whose jobs vary only by resolution.
+    """All jobs for a single storm.
 
-    These are the jobs compared together in a single gauge-comparison plot.
+    Every job for the storm is overlaid on one gauge-comparison plot, so the
+    group is keyed only by storm date; all other parameters (sea level,
+    scaling, resolution, levels, time dilation) vary *within* the group and
+    become the distinct lines on each gauge's plot.
     """
     storm_date: str
-    sea_level: float
-    scaling: float
-    amr_max_level: int
-    time_dilation: float
     jobs: list = field(default_factory=list)
 
-    def label(self) -> str:
-        return (f"{self.storm_date}"
-                f"_sea{self.sea_level:.1f}"
-                f"_scale{self.scaling:.2f}"
-                f"_lev{self.amr_max_level}"
-                f"_dil{self.time_dilation:.2f}"
-                )
+
+# Visual-encoding palettes for gauge comparison plots.  Each ensemble
+# parameter is mapped to a distinct visual channel so individual runs need no
+# per-line legend entry (the mapping is decoded in a separate key figure):
+#   color     <- resolution
+#   linestyle <- sea level
+#   marker    <- time dilation
+#   linewidth <- scaling
+# amr_max_levels is intentionally not encoded for now.
+_RES_COLORS = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7"]
+_SEA_LINESTYLES = ["-", "--", ":", "-."]
+_DIL_MARKERS = ["o", "s", "^", "D", "v", "*", "P", "X"]
+_SCALE_LINEWIDTHS = [1.0, 1.75, 2.5, 3.25]
+
+
+def build_styles(jobs: list["ETCJob"]) -> tuple[list[dict], list[dict]]:
+    """Map ensemble parameters to per-line plot styles.
+
+    Returns
+    -------
+    styles
+        One matplotlib-kwargs dict per job (parallel to *jobs*).
+    key_channels
+        Spec for the standalone legend figure: one section per channel that
+        actually varies, each a ``{"title", "entries": [(label, kwargs)]}``.
+    """
+    def res_of(job: "ETCJob") -> str:
+        return job.storm_path.stem.split("_")[1]
+
+    res_vals = sorted({res_of(j) for j in jobs})
+    sea_vals = sorted({j.sea_level for j in jobs})
+    dil_vals = sorted({j.time_dilation for j in jobs})
+    scale_vals = sorted({j.scaling for j in jobs})
+
+    color_of = {v: _RES_COLORS[i % len(_RES_COLORS)] for i, v in enumerate(res_vals)}
+    style_of = {v: _SEA_LINESTYLES[i % len(_SEA_LINESTYLES)] for i, v in enumerate(sea_vals)}
+    marker_of = {v: _DIL_MARKERS[i % len(_DIL_MARKERS)] for i, v in enumerate(dil_vals)}
+    width_of = {v: _SCALE_LINEWIDTHS[i % len(_SCALE_LINEWIDTHS)] for i, v in enumerate(scale_vals)}
+
+    styles = [{"color": color_of[res_of(j)],
+               "linestyle": style_of[j.sea_level],
+               "marker": marker_of[j.time_dilation],
+               "linewidth": width_of[j.scaling]} for j in jobs]
+
+    # Each channel: title, sorted values, value->label, value->proxy kwargs
+    # (isolating that one channel against neutral defaults).
+    channels = [
+        ("Resolution", res_vals, lambda v: str(v),
+         lambda v: {"color": color_of[v], "linestyle": "-", "linewidth": 2.0}),
+        ("Sea level (m)", sea_vals, lambda v: f"{v:.1f}",
+         lambda v: {"color": "black", "linestyle": style_of[v], "linewidth": 2.0}),
+        ("Time dilation", dil_vals, lambda v: f"{v:.2f}",
+         lambda v: {"color": "black", "linestyle": "-", "marker": marker_of[v],
+                    "linewidth": 2.0}),
+        ("Scaling", scale_vals, lambda v: f"{v:.2f}",
+         lambda v: {"color": "black", "linestyle": "-", "linewidth": width_of[v]}),
+    ]
+    key_channels = [
+        {"title": title, "entries": [(fmt(v), kw(v)) for v in vals]}
+        for title, vals, fmt, kw in channels
+        if len(vals) > 1
+    ]
+    return styles, key_channels
+
 
 def build_run_groups(
     storms_path: Path,
@@ -128,29 +186,26 @@ def build_run_groups(
     amr_max_levels: list[int],
     time_dilations: list[float],
 ) -> tuple[list[Job], list[RunGroup]]:
-    """Build all jobs and group them for gauge comparison.
+    """Build all jobs and group them by storm for gauge comparison.
 
-    Jobs within a group share all parameters except resolution, which is
-    the dimension compared in gauge plots.  The flat job list is submitted
-    to a single controller so the worker queue stays full.
+    All jobs for a storm share one group and are overlaid on the same gauge
+    plots.  The flat job list is submitted to a single controller so the
+    worker queue stays full.
     """
     all_jobs: list[Job] = []
-    groups: list[RunGroup] = []
+    groups: dict[str, RunGroup] = {sd: RunGroup(sd) for sd in storm_dates}
 
-    for sea_level, amr_max_level, scaling, storm_date, time_dilation in itertools.product(
-            sea_levels, amr_max_levels, scalings, storm_dates, time_dilations):
-        group = RunGroup(storm_date, sea_level, scaling, amr_max_level, time_dilation)
-        for res in resolutions:
-            job = ETCJob(storms_path / f"{storm_date}_{res}.nc",
-                         sea_level=sea_level,
-                         scaling=scaling,
-                         levels=amr_max_level,
-                         time_dilation=time_dilation)
-            all_jobs.append(job)
-            group.jobs.append(job)
-        groups.append(group)
+    for storm_date, sea_level, amr_max_level, scaling, time_dilation, res in itertools.product(
+            storm_dates, sea_levels, amr_max_levels, scalings, time_dilations, resolutions):
+        job = ETCJob(storms_path / f"{storm_date}_{res}.nc",
+                     sea_level=sea_level,
+                     scaling=scaling,
+                     levels=amr_max_level,
+                     time_dilation=time_dilation)
+        all_jobs.append(job)
+        groups[storm_date].jobs.append(job)
 
-    return all_jobs, groups
+    return all_jobs, list(groups.values())
 
 
 def report_results(results: list[JobResult]) -> None:
@@ -163,18 +218,33 @@ def report_results(results: list[JobResult]) -> None:
 
 
 def plot_gauge_comparisons(
-    results: list[JobResult],
     groups: list[RunGroup],
     gauge_figs_path: Path,
+    run_root: Path,
 ) -> None:
-    """Call gauge_comparison.plot for each group using only that group's results."""
-    job_to_result = {r.job: r for r in results}
+    """Call gauge_comparison.plot for each group.
+
+    Drives the comparison off each group's jobs and their canonical output
+    directories rather than off the jobs submitted this invocation, so that
+    ``--resume`` (which skips already-completed jobs and therefore omits them
+    from ``ctrl.run()``'s results) still regenerates every comparison plot.
+    """
     for group in groups:
-        group_results = [job_to_result[job] for job in group.jobs
-                         if job in job_to_result]
+        group_results = []
+        for job in group.jobs:
+            job_dir = run_root / job.prefix
+            if not job_dir.exists():
+                continue
+            paths = JobPaths(job=job_dir,
+                             plots=job_dir / "plots",
+                             log=job_dir / f"{job.prefix}_log.txt")
+            group_results.append(JobResult(job=job, paths=paths, returncode=0))
         if not group_results:
+            logging.warning("No output found for storm %s; skipping comparison.",
+                            group.storm_date)
             continue
-        gc.plot(group_results, gauge_figs_path / group.label(), group.storm_date)
+        styles, key_channels = build_styles([r.job for r in group_results])
+        gc.plot(group_results, gauge_figs_path, group.storm_date, styles, key_channels)
 
 
 def main() -> None:
@@ -209,12 +279,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    storm_dates = ["DEC2012", "NOV2018"]
-    # resolutions = ["0pt25", "1pt00", "1pt50"]
-    resolutions = ["1pt00"]
+    storm_dates = ["DEC1992","DEC2012", "NOV2018"]
+    resolutions = ["0pt25", "1pt00", "1pt50"]
+    # sea_levels = [0.0, 0.2, 0.4]
     sea_levels = [0.0]
-    scalings = [1.0]
-    amr_max_levels = [1]
+    # scalings = [0.8, 1.0, 1.2]
+    scalings = [0.8, 1.0]
+    amr_max_levels = [2]
     time_dilations = [0.8, 1.0, 1.2]
 
     jobs, groups = build_run_groups(
@@ -245,10 +316,13 @@ def main() -> None:
     results = ctrl.run(wait=True)
     report_results(results)
 
-    gauge_figs_path = (Path(os.environ['OUTPUT_PATH'])
-                       / ctrl.experiment / "gauge_comparisons")
+    # Run output lives under OUTPUT_PATH; the cross-run comparison figures are
+    # written to the shared runs directory instead.
+    run_root = Path(os.environ['OUTPUT_PATH']).expanduser().resolve() / ctrl.experiment
+    gauge_figs_path = (Path(os.environ['SHARED_RUNS_PATH']).expanduser().resolve()
+                       / "gauge_comparisons")
     gauge_figs_path.mkdir(parents=True, exist_ok=True)
-    plot_gauge_comparisons(results, groups, gauge_figs_path)
+    plot_gauge_comparisons(groups, gauge_figs_path, run_root)
 
 
 if __name__ == "__main__":

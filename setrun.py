@@ -16,7 +16,6 @@ import gzip
 import numpy as np
 
 from clawpack.geoclaw.surge.storm import Storm
-from clawpack.geoclaw.netcdf_utils import MetInterrogator
 import clawpack.clawutil as clawutil
 import clawpack.geoclaw.util as util
 
@@ -99,12 +98,12 @@ def setrun(claw_pkg='geoclaw'):
     # Initial time:
     # -------------
     clawdata.t0 =  days2seconds(0.0)
-    # clawdata.tfinal = days2seconds(4.0)
-    clawdata.tfinal = days2seconds(3.0)
-    # November storm 
+    # 1992 Dec storm: forcing file spans 1992-12-08T00:00 -> 12-16T23:00 (8 days)
+    clawdata.tfinal = days2seconds(8.0)
+    # November storm
     #   start time "2018-11-14T08"
     #   end time "2018-11-17T19" 16H + 2D + 19
-    clawdata.tfinal = 16*60**2 + days2seconds(2.0) + 19*60**2
+    # clawdata.tfinal = 16*60**2 + days2seconds(2.0) + 19*60**2
 
     # Restart from checkpoint file of a previous run?
     # If restarting, t0 above should be from original run, and the
@@ -126,7 +125,7 @@ def setrun(claw_pkg='geoclaw'):
 
     if clawdata.output_style == 1:
         # Output nout frames at equally spaced times up to tfinal:
-        recurrence = 24
+        recurrence = 6
         clawdata.num_output_times = int((clawdata.tfinal - clawdata.t0) *
                                         recurrence / (60**2 * 24))
 
@@ -266,7 +265,7 @@ def setrun(claw_pkg='geoclaw'):
     amrdata = rundata.amrdata
 
     # max number of refinement levels:
-    amrdata.amr_levels_max = 2
+    amrdata.amr_levels_max = 1
 
     amrdata.refinement_ratios_x = [2, 2, 2, 3, 3, 3, 4, 4]
     amrdata.refinement_ratios_y = [2, 2, 2, 3, 3, 3, 4, 4]
@@ -518,26 +517,22 @@ def setgeo(rundata):
     # storm_path = (Path(os.environ['DATA_PATH']) / "storms" / "ETC_NASA_SLCT"
     #                           / "NOV2018_0pt25.nc").resolve()
     # etc_storm.time_offset = np.datetime64("2018-11-14T08:00:00.00")
-
+    # storm_path = (Path(os.environ['DATA_PATH']) / "storms" / "ETC_NASA_SLCT"
+    #                           / "DEC2012_0pt25.nc").resolve()
+    # etc_storm.time_offset = np.datetime64("2012-12-26")
     storm_path = (Path(os.environ['DATA_PATH']) / "storms" / "ETC_NASA_SLCT"
-                              / "DEC2012_0pt25.nc").resolve()
-    etc_storm.time_offset = np.datetime64("2012-12-26")
+                              / "DEC1992_0pt25.nc").resolve()
+    etc_storm.time_offset = np.datetime64("1992-12-08T00:00:00.00")
     etc_storm.file_paths.append(storm_path)
     
     
     etc_storm.file_format = 'netcdf'
-    etc_storm.scaling = [1.0, 1.0]
-    etc_storm.window_type = 'custom'
+    etc_storm.scaling = [1.0, 1.0]   # [wind, pressure] scaling
     etc_storm.ramp_width = 2
-    etc_storm.window = [-80, 27.5, -62.5, 45]
+    etc_storm.crop_extent = [-80, -62.5, 27.5, 45]
+    etc_storm.storm_time_scale = 1.0
     etc_storm.write(data.storm_file, file_format='data',
                                      var_mapping={'pressure': 'msl'})
-    # etc_storm.write(data.storm_file, file_format='data',
-    #                                  dim_mapping={"t": "valid_time"},
-    #                                  var_mapping={"pressure": "msl"},
-    #                                  crop=etc_storm.window,
-    #                                  verbose=True
-    #                                  )
 
     # =======================
     #  Set Variable Friction
