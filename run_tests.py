@@ -8,9 +8,11 @@ import argparse
 import itertools
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from batch import Job, ParallelExecutor, BatchController, ClobberPolicy, JobResult
@@ -230,6 +232,166 @@ def report_results(results: list[JobResult]) -> None:
             print(f"  FAILED: {r.job.prefix}  (see {r.paths.log})")
 
 
+def parse_timing(job_dir: Path) -> dict | None:
+    """Parse timing.txt produced by the GeoClaw solver.
+
+    Returns a dict with:
+      levels: list of {level, wall, cpu, cells} (per AMR level)
+      total_integration: {wall, cpu, cells}
+      components: {stepgrid, bc, regrid, output: {wall, cpu}}
+      total: {wall, cpu}
+      n_threads: int
+    Returns None if timing.txt is absent.
+    """
+    txt_path = job_dir / "timing.txt"
+    if not txt_path.exists():
+        return None
+
+    text = txt_path.read_text()
+    result: dict = {"levels": [], "components": {}}
+
+    for m in re.finditer(
+            r"^\s+(\d+)\s+([\d.E+]+)\s+([\d.E+]+)\s+([\d.E+]+)",
+            text, re.MULTILINE):
+        result["levels"].append({
+            "level": int(m.group(1)),
+            "wall": float(m.group(2)),
+            "cpu": float(m.group(3)),
+            "cells": float(m.group(4)),
+        })
+
+    m = re.search(r"^total\s+([\d.E+]+)\s+([\d.E+]+)\s+([\d.E+]+)",
+                  text, re.MULTILINE)
+    if m:
+        result["total_integration"] = {
+            "wall": float(m.group(1)), "cpu": float(m.group(2)),
+            "cells": float(m.group(3)),
+        }
+
+    for key, pattern in [
+        ("stepgrid", r"stepgrid\s+([\d.E+]+)\s+([\d.E+]+)"),
+        ("bc",       r"BC/ghost cells\s+([\d.E+]+)\s+([\d.E+]+)"),
+        ("regrid",   r"Regridding\s+([\d.E+]+)\s+([\d.E+]+)"),
+        ("output",   r"Output \(valout\)\s+([\d.E+]+)\s+([\d.E+]+)"),
+    ]:
+        m = re.search(pattern, text)
+        if m:
+            result["components"][key] = {
+                "wall": float(m.group(1)), "cpu": float(m.group(2))}
+
+    m = re.search(r"Total time:\s+([\d.E+]+)\s+([\d.E+]+)", text)
+    if m:
+        result["total"] = {"wall": float(m.group(1)), "cpu": float(m.group(2))}
+
+    m = re.search(r"Using (\d+) thread", text)
+    result["n_threads"] = int(m.group(1)) if m else 1
+
+    return result
+
+
+def _plot_perf_group(
+    timings: list[dict],
+    jobs: list["ETCJob"],
+    storm_date: str,
+    out_path: Path,
+) -> None:
+    """Three-panel performance figure for one storm group.
+
+    Left:   total wall time bars + CPU efficiency overlay
+    Middle: stacked wall time by AMR level
+    Right:  stacked wall time by solver component
+    """
+    n = len(timings)
+    x = np.arange(n)
+
+    prefix_strip = f"storm{storm_date}_"
+    short = [j.prefix.replace(prefix_strip, "").replace("_", "\n") for j in jobs]
+    tick_fs = max(4, 9 - n // 8)
+
+    fig, axes = plt.subplots(1, 3, figsize=(max(14, n * 0.9 + 4), 6))
+    fig.suptitle(f"Performance Analysis — {storm_date}", fontsize=13)
+
+    # Total wall time (bars) + CPU efficiency (line on twin axis)
+    ax = axes[0]
+    wall_min = [t["total"]["wall"] / 60 for t in timings]
+    ax.bar(x, wall_min, color="steelblue")
+    ax.set_xticks(x)
+    ax.set_xticklabels(short, rotation=90, fontsize=tick_fs)
+    ax.set_ylabel("Wall Time (min)")
+    ax.set_title("Total Wall Time")
+
+    ax2 = ax.twinx()
+    eff = [t["total"]["cpu"] / (t.get("n_threads", 1) * t["total"]["wall"]) * 100
+           for t in timings]
+    ax2.plot(x, eff, "o-", color="orange", label="CPU efficiency")
+    ax2.set_ylabel("CPU Efficiency (%)", color="orange")
+    ax2.tick_params(axis="y", labelcolor="orange")
+    ax2.set_ylim(0, 110)
+
+    # Stacked wall time by AMR level
+    ax = axes[1]
+    max_lev = max(len(t["levels"]) for t in timings)
+    bottoms = np.zeros(n)
+    for li in range(max_lev):
+        vals = np.array([
+            t["levels"][li]["wall"] / 60 if li < len(t["levels"]) else 0.0
+            for t in timings
+        ])
+        ax.bar(x, vals, bottom=bottoms, label=f"Level {li + 1}")
+        bottoms += vals
+    ax.set_xticks(x)
+    ax.set_xticklabels(short, rotation=90, fontsize=tick_fs)
+    ax.set_ylabel("Wall Time (min)")
+    ax.set_title("Time by AMR Level")
+    ax.legend(fontsize=8)
+
+    # Stacked wall time by solver component
+    ax = axes[2]
+    bottoms = np.zeros(n)
+    for key, lbl in [("stepgrid", "Step (PDE)"), ("bc", "BC/Ghost"),
+                     ("regrid", "Regrid"), ("output", "Output")]:
+        vals = np.array([
+            t["components"].get(key, {}).get("wall", 0.0) / 60 for t in timings
+        ])
+        ax.bar(x, vals, bottom=bottoms, label=lbl)
+        bottoms += vals
+    ax.set_xticks(x)
+    ax.set_xticklabels(short, rotation=90, fontsize=tick_fs)
+    ax.set_ylabel("Wall Time (min)")
+    ax.set_title("Time by Component")
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    fig_path = out_path / f"performance_{storm_date}.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logging.info("Performance plot saved: %s", fig_path)
+
+
+def plot_performance_analysis(
+    groups: list[RunGroup],
+    perf_figs_path: Path,
+    run_root: Path,
+) -> None:
+    """Generate timing comparison plots for each storm group.
+
+    Reads timing.txt from each job's output directory (skipping any that are
+    missing) and writes one performance figure per group to *perf_figs_path*.
+    """
+    for group in groups:
+        timings, valid_jobs = [], []
+        for job in group.jobs:
+            t = parse_timing(run_root / job.prefix)
+            if t is not None:
+                timings.append(t)
+                valid_jobs.append(job)
+        if not timings:
+            logging.warning("No timing data for storm %s; skipping performance plot.",
+                            group.storm_date)
+            continue
+        _plot_perf_group(timings, valid_jobs, group.storm_date, perf_figs_path)
+
+
 def plot_gauge_comparisons(
     groups: list[RunGroup],
     gauge_figs_path: Path,
@@ -300,11 +462,9 @@ def main() -> None:
         "DEC2012": ["0pt25", "1pt00", "1pt50"],
         "NOV2018": ["0pt25", "1pt00", "1pt50"],
     }
-    # sea_levels = [0.0, 0.2, 0.4]
-    sea_levels = [0.0]
-    # scalings = [0.8, 1.0, 1.2]
-    scalings = [0.8, 1.0]
-    amr_max_levels = [2]
+    sea_levels = [0.0, 0.2]
+    scalings = [0.8, 1.0, 1.2]
+    amr_max_levels = [5]
     time_dilations = [0.8, 1.0, 1.2]
 
     jobs, groups = build_run_groups(
@@ -338,10 +498,15 @@ def main() -> None:
     # Run output lives under OUTPUT_PATH; the cross-run comparison figures are
     # written to the shared runs directory instead.
     run_root = Path(os.environ['OUTPUT_PATH']).expanduser().resolve() / ctrl.experiment
-    gauge_figs_path = (Path(os.environ['SHARED_RUNS_PATH']).expanduser().resolve()
-                       / "gauge_comparisons")
+    shared_runs = Path(os.environ['SHARED_RUNS_PATH']).expanduser().resolve()
+
+    gauge_figs_path = shared_runs / "gauge_comparisons"
     gauge_figs_path.mkdir(parents=True, exist_ok=True)
     plot_gauge_comparisons(groups, gauge_figs_path, run_root)
+
+    perf_figs_path = shared_runs / "performance"
+    perf_figs_path.mkdir(parents=True, exist_ok=True)
+    plot_performance_analysis(groups, perf_figs_path, run_root)
 
 
 if __name__ == "__main__":
