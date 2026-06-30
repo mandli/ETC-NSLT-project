@@ -66,16 +66,24 @@ def setplot(plotdata=None):
     # Per-storm reference time (t=0) and NOAA fetch window, keyed by the
     # storm file's name prefix.  ``landfall_time`` must match the
     # ``time_offset`` set for the storm in setrun.py.
+    # Per-storm configuration keyed by storm file name prefix.
+    # Fields: (landfall_time, noaa_begin, noaa_end, gauge_xlimits)
+    #   landfall_time  - np.datetime64 matching time_offset in setrun.py (t=0)
+    #   noaa_begin/end - datetime.datetime window for NOAA tide data fetch
+    #   gauge_xlimits  - [t_start, t_end] in days relative to landfall_time
     storm_times = {
         "DEC1992": (np.datetime64("1992-12-08T00:00:00.00"),
                     datetime.datetime(1992, 12, 8, 0, 0),
-                    datetime.datetime(1992, 12, 16, 0, 0)),
+                    datetime.datetime(1992, 12, 16, 0, 0),
+                    [2, 6]),
         "DEC2012": (np.datetime64("2012-12-26T00:00"),
                     datetime.datetime(2012, 12, 25, 0, 0),
-                    datetime.datetime(2012, 12, 30, 0, 0)),
+                    datetime.datetime(2012, 12, 30, 0, 0),
+                    [0, 4]),
         "NOV2018": (np.datetime64("2018-11-14T08:00:00.00"),
                     datetime.datetime(2018, 11, 14, 0, 0),
-                    datetime.datetime(2018, 11, 18, 0, 0)),
+                    datetime.datetime(2018, 11, 18, 0, 0),
+                    [0, 4]),
     }
 
     def get_storm_times(storm):
@@ -85,7 +93,7 @@ def setplot(plotdata=None):
                 return times
         raise ValueError(f"Unknown storm {storm.name}")
 
-    landfall_time, _begin_date, _end_date = get_storm_times(storm)
+    landfall_time, _begin_date, _end_date, gauge_xlimits = get_storm_times(storm)
     time_label = ("Days relative to "
                   + np.datetime_as_string(landfall_time, unit='m').replace("T", " ")
                   + " UTC")
@@ -292,7 +300,7 @@ def setplot(plotdata=None):
     plotaxes = plotfigure.new_plotaxes()
     plotaxes.time_scale = 1 / (24 * 60**2)
     plotaxes.grid = True
-    plotaxes.xlimits = [0, 3]
+    plotaxes.xlimits = gauge_xlimits
     plotaxes.ylimits = [-0.5, 2.0]
     plotaxes.title = "Surface"
     plotaxes.ylabel = "Surface (m)"
