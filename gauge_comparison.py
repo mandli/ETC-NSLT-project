@@ -37,7 +37,7 @@ times = {"DEC1992": [np.datetime64("1992-12-08T00:00:00.00"),
                         datetime.datetime(2018, 11, 18, 0, 0),
                         [0, 4]]}
 
-def plot_surface(ax, gauge_id, output_path, style, n_markers=15,
+def plot_surface(ax, gauge_id, output_path, style, label=None, n_markers=15,
                  dry_tolerance=1e-16, alpha=1.0):
     """Fetch and plot surface data for a single run.
 
@@ -61,7 +61,8 @@ def plot_surface(ax, gauge_id, output_path, style, n_markers=15,
     else:
         markevery = max(1, time.size // n_markers)
 
-    ax.plot(time, surface, markevery=markevery, alpha=alpha, **plot_style)
+    ax.plot(time, surface, markevery=markevery, alpha=alpha, label=label,
+            **plot_style)
     return time, surface
 
 
@@ -161,42 +162,58 @@ def plot_key(out_file: Path, key_channels: list[dict]) -> None:
 
 
 def plot(results: list[JobResult], out_path: Path, storm_date: str,
-         styles: list[dict], key_channels: list[dict]) -> None:
+         styles: list[dict], labels: list[str] | None = None,
+         key_channels: list[dict] | None = None,
+         subtitle: str = "") -> None:
     """Plot gauge comparisons for a given storm date.
 
     All ``results`` are overlaid on each gauge's plot, styled by ``styles``
-    (one matplotlib-kwargs dict per result, parallel to ``results``).  The
-    per-line legend is replaced by a single standalone key figure built from
-    ``key_channels``.
-    """
+    (one matplotlib-kwargs dict per result, parallel to ``results``).
 
-    # Paths
-    figure_path = out_path / storm_date
+    When ``labels`` is provided each line is labelled and an in-plot legend is
+    drawn; otherwise lines are drawn at low alpha with a min/max ensemble band.
+    ``subtitle`` (e.g. "Dilation=1.00, Scaling=1.20") is appended to the title
+    on a second line.  A standalone key figure is still written when
+    ``key_channels`` is supplied.
+    """
+    figure_path = out_path
     figure_path.mkdir(parents=True, exist_ok=True)
 
     storm_cfg = times[storm_date]
     gauge_xlimits = storm_cfg[3]
+    labeled = labels is not None
 
     for gauge_id in range(1, 9):
         fig, ax = plt.subplots()
         plot_observed(ax, gauge_id, storm_cfg)
 
         run_data = []
-        for result, style in zip(results, styles):
-            if storm_date == result.job.storm_path.stem.split("_")[0]:
-                t, s = plot_surface(ax, gauge_id, result.paths.job, style,
-                                    alpha=0.2)
-                run_data.append((t, s))
+        for i, (result, style) in enumerate(zip(results, styles)):
+            lbl = labels[i] if labeled else None
+            alpha = 1.0 if labeled else 0.2
+            t, s = plot_surface(ax, gauge_id, result.paths.job, style,
+                                label=lbl, alpha=alpha)
+            run_data.append((t, s))
 
-        plot_ensemble_band(ax, run_data)
+        if not labeled:
+            plot_ensemble_band(ax, run_data)
+
+        if labeled:
+            ax.legend(fontsize=7, loc="upper left")
 
         ax.set_xlim(gauge_xlimits)
         ax.set_xlabel("Time (days)")
         ax.set_ylabel("Surface Elevation (m)")
 
         station_id, station_name = gauge_mapping[gauge_id]
-        ax.set_title(f"{station_name} ({station_id}) - {storm_date}")
+        title = f"{station_name} ({station_id}) - {storm_date}"
+        if subtitle:
+            title = f"{title}\n{subtitle}"
+        ax.set_title(title, fontsize=10)
+
+        fig.tight_layout()
         fig.savefig(figure_path / f"gauge_{gauge_id}_surface_comparison.png", dpi=300)
         plt.close(fig)
 
-    plot_key(figure_path / "key.png", key_channels)
+    if key_channels:
+        plot_key(figure_path / "key.png", key_channels)

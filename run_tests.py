@@ -156,10 +156,14 @@ def build_styles(jobs: list["ETCJob"]) -> tuple[list[dict], list[dict]]:
     marker_of = {v: _DIL_MARKERS[i % len(_DIL_MARKERS)] for i, v in enumerate(dil_vals)}
     width_of = {v: _SCALE_LINEWIDTHS[i % len(_SCALE_LINEWIDTHS)] for i, v in enumerate(scale_vals)}
 
-    styles = [{"color": color_of[res_of(j)],
-               "linestyle": style_of[j.sea_level],
-               "marker": marker_of[j.time_dilation],
-               "linewidth": width_of[j.scaling]} for j in jobs]
+    styles = []
+    for j in jobs:
+        s = {"color": color_of[res_of(j)],
+             "linestyle": style_of[j.sea_level],
+             "linewidth": width_of[j.scaling]}
+        if len(dil_vals) > 1:
+            s["marker"] = marker_of[j.time_dilation]
+        styles.append(s)
 
     # Each channel: title, sorted values, value->label, value->proxy kwargs
     # (isolating that one channel against neutral defaults).
@@ -403,7 +407,15 @@ def plot_gauge_comparisons(
     directories rather than off the jobs submitted this invocation, so that
     ``--resume`` (which skips already-completed jobs and therefore omits them
     from ``ctrl.run()``'s results) still regenerates every comparison plot.
+
+    Results are split by (time_dilation, scaling) so that each output figure
+    set has at most 6 lines (3 resolutions × 2 sea levels), making individual
+    runs legible with an in-plot legend.  Output lives under
+    ``gauge_figs_path / storm_date / dil{d:.2f}_sc{s:.2f}/``.
     """
+    def _res_of(job: "ETCJob") -> str:
+        return job.storm_path.stem.split("_")[1]
+
     for group in groups:
         group_results = []
         for job in group.jobs:
@@ -418,8 +430,22 @@ def plot_gauge_comparisons(
             logging.warning("No output found for storm %s; skipping comparison.",
                             group.storm_date)
             continue
-        styles, key_channels = build_styles([r.job for r in group_results])
-        gc.plot(group_results, gauge_figs_path, group.storm_date, styles, key_channels)
+
+        # Split by (time_dilation, scaling) → each subplot-set has ≤6 lines
+        sub_groups: dict[tuple, list] = {}
+        for result in group_results:
+            key = (result.job.time_dilation, result.job.scaling)
+            sub_groups.setdefault(key, []).append(result)
+
+        for (dil, scale), sub_results in sorted(sub_groups.items()):
+            out_dir = (gauge_figs_path / group.storm_date
+                       / f"dil{dil:.2f}_sc{scale:.2f}")
+            styles, key_channels = build_styles([r.job for r in sub_results])
+            labels = [f"{_res_of(r.job)}, SL={r.job.sea_level:.1f}"
+                      for r in sub_results]
+            subtitle = f"Dilation={dil:.2f}, Scaling={scale:.2f}"
+            gc.plot(sub_results, out_dir, group.storm_date, styles,
+                    labels=labels, subtitle=subtitle)
 
 
 def main() -> None:
