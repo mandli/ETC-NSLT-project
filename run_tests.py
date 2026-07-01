@@ -9,6 +9,7 @@ import itertools
 import logging
 import os
 import re
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -478,6 +479,11 @@ def main() -> None:
         default=int(os.environ.get("OMP_NUM_THREADS", 1)),
         help="OpenMP threads per job (default: $OMP_NUM_THREADS or 1).",
     )
+    parser.add_argument(
+        "--run-label",
+        default=os.environ.get("HOSTNAME") or socket.gethostname(),
+        help="Label subdirectory for output plots (default: $HOSTNAME or hostname).",
+    )
     args = parser.parse_args()
 
     storm_dates = ["DEC1992", "DEC2012", "NOV2018"]
@@ -526,11 +532,11 @@ def main() -> None:
     run_root = Path(os.environ['OUTPUT_PATH']).expanduser().resolve() / ctrl.experiment
     shared_runs = Path(os.environ['SHARED_RUNS_PATH']).expanduser().resolve()
 
-    gauge_figs_path = shared_runs / "gauge_comparisons"
+    gauge_figs_path = shared_runs / "gauge_comparisons" / args.run_label
     gauge_figs_path.mkdir(parents=True, exist_ok=True)
     plot_gauge_comparisons(groups, gauge_figs_path, run_root)
 
-    perf_figs_path = shared_runs / "performance"
+    perf_figs_path = shared_runs / "performance" / args.run_label
     perf_figs_path.mkdir(parents=True, exist_ok=True)
     plot_performance_analysis(groups, perf_figs_path, run_root)
 
