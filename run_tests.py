@@ -1,6 +1,59 @@
 #!/usr/bin/env python
 
-"""Run storm surge ensemble jobs for NASA SLCT ETC storms."""
+"""Run storm surge ensemble jobs for NASA SLCT ETC storms.
+
+The ensemble is driven through the ``batch`` package, whose pluggable executor
+backends let the *same* job definitions run either locally or on an HPC
+scheduler.  Two backends are wired up here, selected with ``--scheduler``:
+
+Local runs (default)
+--------------------
+Runs the solver directly on this machine with a bounded worker pool, waits for
+every job, then generates the cross-run comparison figures::
+
+    python run_tests.py                       # full ensemble, local
+    python run_tests.py --setup-only          # write .data files only
+    python run_tests.py --resume              # skip finished job dirs
+
+``--max-workers`` sets how many jobs run at once and ``--omp-num-threads`` sets
+OpenMP threads per job; keep ``max_workers * omp_num_threads`` at or below the
+core count to avoid oversubscription.
+
+PBS runs on Derecho
+-------------------
+NCAR Derecho uses PBS Pro.  Each job becomes an independent ``qsub``
+submission; the script submits everything and returns immediately (it does not
+tie up a login-node process).  Each job self-plots on the compute node, and the
+cross-run comparison figures are produced by a separate ``--plot-only`` pass
+once the jobs have finished.
+
+Typical workflow on Derecho::
+
+    # 0. Environment (in your job/login shell)
+    export DATA_PATH=...            # storm + topo inputs
+    export OUTPUT_PATH=...          # scratch: per-job run directories
+    export SHARED_RUNS_PATH=...     # where comparison figures are collected
+    export PBS_ACCOUNT=NCAR0001     # your Derecho project code
+    module load ncarenv conda       # or whatever provides clawpack
+
+    # 1. Inspect the generated scripts without submitting
+    python run_tests.py --scheduler pbs --dry-run
+
+    # 2. Submit the ensemble (one PBS job per run)
+    python run_tests.py --scheduler pbs --walltime 12:00:00
+
+    # 3. Watch the queue
+    qstat -u $USER
+
+    # 4. After the jobs finish, build the comparison figures
+    python run_tests.py --plot-only
+
+    # Resume after a walltime kill (only unfinished jobs are resubmitted)
+    python run_tests.py --scheduler pbs --resume
+
+The Derecho project code is taken from ``--account`` or ``$PBS_ACCOUNT``; queue,
+walltime, threads, and modules are all overridable on the command line.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +71,7 @@ import numpy as np
 
 from batch import Job, ParallelExecutor, BatchController, ClobberPolicy, JobResult
 from batch import JobPaths
+from batch import PBSExecutor, PBSResources
 from batch.plot import plot_job
 
 import clawpack.clawutil.util as clawutil
@@ -51,6 +105,9 @@ class ETCJob(Job):
                        f"lev{levels}_" +
                        f"dil{time_dilation:.2f}")
         self.executable = "xgeoclaw"
+        # Absolute setplot path so the PBS script's compute-node plotclaw call
+        # (and post_run for local runs) resolves correctly regardless of cwd.
+        self.setplot = str(Path(__file__).parent / "setplot.py")
 
         self.storm_path = storm_path
         self.scaling = scaling
@@ -449,12 +506,51 @@ def plot_gauge_comparisons(
                     labels=labels, subtitle=subtitle)
 
 
+def generate_comparison_plots(groups: list[RunGroup], run_label: str) -> None:
+    """Build the cross-run gauge and performance comparison figures.
+
+    Reads each job's solver output (``fort.gauge``, ``timing.txt``) directly
+    from its canonical directory under ``OUTPUT_PATH``, so this works whether
+    the jobs ran locally or on PBS — it only needs the output on disk.  The
+    figures are collected under ``SHARED_RUNS_PATH`` in a per-label
+    subdirectory.
+    """
+    run_root = Path(os.environ['OUTPUT_PATH']).expanduser().resolve() / "ETC_NASA_SLCT"
+    shared_runs = Path(os.environ['SHARED_RUNS_PATH']).expanduser().resolve()
+
+    gauge_figs_path = shared_runs / "gauge_comparisons" / run_label
+    gauge_figs_path.mkdir(parents=True, exist_ok=True)
+    plot_gauge_comparisons(groups, gauge_figs_path, run_root)
+
+    perf_figs_path = shared_runs / "performance" / run_label
+    perf_figs_path.mkdir(parents=True, exist_ok=True)
+    plot_performance_analysis(groups, perf_figs_path, run_root)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--scheduler",
+        choices=["local", "pbs"],
+        default="local",
+        help="Execution backend: 'local' (subprocess pool, default) or 'pbs' "
+             "(qsub on Derecho, submit-and-exit).",
+    )
     parser.add_argument(
         "--setup-only",
         action="store_true",
         help="Write .data files only; do not run the solver.",
+    )
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Skip submission; only (re)generate comparison figures from "
+             "existing output. Run this after a PBS batch finishes.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="PBS only: write the qsub scripts but do not submit them.",
     )
     parser.add_argument(
         "--resume",
@@ -471,13 +567,36 @@ def main() -> None:
         "--max-workers",
         type=int,
         default=int(os.environ.get("BATCH_MAX_JOBS", 4)),
-        help="Maximum concurrent jobs (default: $BATCH_MAX_JOBS or 4).",
+        help="Local only: max concurrent jobs (default: $BATCH_MAX_JOBS or 4).",
     )
     parser.add_argument(
         "--omp-num-threads",
         type=int,
         default=int(os.environ.get("OMP_NUM_THREADS", 1)),
-        help="OpenMP threads per job (default: $OMP_NUM_THREADS or 1).",
+        help="OpenMP threads per job (default: $OMP_NUM_THREADS or 1). For PBS "
+             "this also sets ncpus/ompthreads in the select request.",
+    )
+    parser.add_argument(
+        "--account",
+        default=os.environ.get("PBS_ACCOUNT", ""),
+        help="PBS only: Derecho project code (#PBS -A; default: $PBS_ACCOUNT).",
+    )
+    parser.add_argument(
+        "--queue",
+        default="main",
+        help="PBS only: queue name (default: main).",
+    )
+    parser.add_argument(
+        "--walltime",
+        default="12:00:00",
+        help="PBS only: walltime limit HH:MM:SS (default: 12:00:00).",
+    )
+    parser.add_argument(
+        "--pbs-modules",
+        nargs="*",
+        default=(os.environ.get("PBS_MODULES", "").split()),
+        help="PBS only: modules to 'module load' in the job script "
+             "(default: $PBS_MODULES, space-separated).",
     )
     parser.add_argument(
         "--run-label",
@@ -509,12 +628,38 @@ def main() -> None:
         time_dilations,
     )
 
-    ctrl = BatchController(
-        jobs=jobs,
-        executor=ParallelExecutor(
+    # --plot-only: skip the controller/executor entirely and just (re)build the
+    # comparison figures from whatever output already exists on disk.
+    if args.plot_only:
+        generate_comparison_plots(groups, args.run_label)
+        return
+
+    if args.scheduler == "pbs":
+        executor = PBSExecutor(
+            default_resources=PBSResources(
+                queue=args.queue,
+                nodes=1,
+                ncpus=args.omp_num_threads,
+                mpiprocs=1,
+                ompthreads=args.omp_num_threads,
+                walltime=args.walltime,
+                account=args.account,
+                env_vars={"OMP_NUM_THREADS": str(args.omp_num_threads)},
+                modules=args.pbs_modules,
+                plot=True,
+                setplot=str(Path(__file__).parent / "setplot.py"),
+            ),
+            dry_run=args.dry_run,
+        )
+    else:
+        executor = ParallelExecutor(
             max_workers=args.max_workers,
             env={"OMP_NUM_THREADS": str(args.omp_num_threads)},
-        ),
+        )
+
+    ctrl = BatchController(
+        jobs=jobs,
+        executor=executor,
         experiment="ETC_NASA_SLCT",
         clobber=ClobberPolicy.SKIP if args.resume else ClobberPolicy.OVERWRITE,
     )
@@ -524,21 +669,23 @@ def main() -> None:
         print(f"Setup complete for {len(paths)} job(s).")
         return
 
+    if args.scheduler == "pbs":
+        # Submit-and-exit: qsub returns immediately. Each job self-plots on the
+        # compute node; run `--plot-only` afterward for the comparison figures.
+        results = ctrl.run(wait=False)
+        if args.dry_run:
+            print(f"Dry run: {len(results)} PBS script(s) written, none submitted.")
+        else:
+            print(f"Submitted {len(results)} job(s) to PBS.")
+            for r in results:
+                print(f"  {r.job.prefix}  ->  PBS job {r.job_id}")
+        print("Run `python run_tests.py --plot-only` once the jobs finish.")
+        return
+
+    # Local: block until every job completes, then build comparison figures.
     results = ctrl.run(wait=True)
     report_results(results)
-
-    # Run output lives under OUTPUT_PATH; the cross-run comparison figures are
-    # written to the shared runs directory instead.
-    run_root = Path(os.environ['OUTPUT_PATH']).expanduser().resolve() / ctrl.experiment
-    shared_runs = Path(os.environ['SHARED_RUNS_PATH']).expanduser().resolve()
-
-    gauge_figs_path = shared_runs / "gauge_comparisons" / args.run_label
-    gauge_figs_path.mkdir(parents=True, exist_ok=True)
-    plot_gauge_comparisons(groups, gauge_figs_path, run_root)
-
-    perf_figs_path = shared_runs / "performance" / args.run_label
-    perf_figs_path.mkdir(parents=True, exist_ok=True)
-    plot_performance_analysis(groups, perf_figs_path, run_root)
+    generate_comparison_plots(groups, args.run_label)
 
 
 if __name__ == "__main__":
