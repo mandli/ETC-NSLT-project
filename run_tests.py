@@ -63,6 +63,8 @@ import logging
 import os
 import re
 import socket
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -505,14 +507,120 @@ def generate_comparison_plots(groups: list[RunGroup], run_label: str) -> None:
     plot_performance_analysis(groups, perf_figs_path, run_root)
 
 
+def _parse_shard(spec: str) -> tuple[int, int]:
+    """Parse an ``I/N`` shard spec into ``(i, n)``; empty string → ``(0, 1)``."""
+    if not spec:
+        return 0, 1
+    try:
+        i_str, n_str = spec.split("/")
+        i, n = int(i_str), int(n_str)
+    except ValueError:
+        raise SystemExit(f"--shard must be I/N (e.g. 0/16); got {spec!r}")
+    if n < 1 or not (0 <= i < n):
+        raise SystemExit(f"--shard I/N requires N >= 1 and 0 <= I < N; got {spec!r}")
+    return i, n
+
+
+def render_packed_wrapper(shard_i: int, n_shards: int, args) -> str:
+    """Render a PBS wrapper that packs one shard of the sweep onto one node.
+
+    The wrapper requests a single exclusive node and, on the compute node, runs
+    this same script in ``--scheduler local`` mode over shard ``shard_i`` of
+    ``n_shards``, with ``--pin-cpus`` so the local pool binds each concurrent
+    job to a disjoint core range.  Per-shard output is partial, so comparison
+    figures are suppressed here (``--no-comparison``) and built afterward by a
+    single ``--plot-only`` pass.
+    """
+    here = Path(__file__).resolve()
+    chunk = f"1:ncpus={args.node_cpus}:mpiprocs=1:ompthreads=1"
+
+    directives = [
+        f"#PBS -N etc_pack_{shard_i}of{n_shards}",
+        f"#PBS -o {here.parent / f'pack_{shard_i}of{n_shards}_log.txt'}",
+        "#PBS -j oe",
+        f"#PBS -q {args.queue}",
+        f"#PBS -l select={chunk}",
+        f"#PBS -l walltime={args.walltime}",
+    ]
+    if args.account:
+        directives.append(f"#PBS -A {args.account}")
+
+    lines = ["#!/bin/bash"] + directives + [""]
+    if args.pbs_modules:
+        lines.extend(f"module load {m}" for m in args.pbs_modules)
+        lines.append("")
+    lines.append(f"cd {here.parent}")
+
+    inner = [
+        sys.executable, str(here),
+        "--scheduler", "local",
+        "--shard", f"{shard_i}/{n_shards}",
+        "--max-workers", str(args.max_workers),
+        "--omp-num-threads", str(args.omp_num_threads),
+        "--pin-cpus",
+        "--no-comparison",
+        "--run-label", args.run_label,
+        "--storms-path", str(args.storms_path),
+    ]
+    if args.resume:
+        inner.append("--resume")
+    if args.no_run_plots:
+        inner.append("--no-run-plots")
+
+    lines.append(" ".join(str(a) for a in inner))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def submit_packed(args) -> None:
+    """Generate one PBS wrapper per shard and (unless --setup-only) qsub them.
+
+    Submit-and-exit: each node's wrapper self-packs its shard via the local
+    pool.  Run ``--plot-only`` afterward to build the cross-run figures.
+    """
+    n = args.nodes
+    if n < 1:
+        raise SystemExit("--nodes must be >= 1")
+    if args.max_workers * args.omp_num_threads > args.node_cpus:
+        logging.warning(
+            "max-workers(%d) * omp-num-threads(%d) = %d exceeds node-cpus(%d); "
+            "packed jobs will oversubscribe the node.",
+            args.max_workers, args.omp_num_threads,
+            args.max_workers * args.omp_num_threads, args.node_cpus,
+        )
+
+    script_dir = (Path(os.environ['OUTPUT_PATH']).expanduser().resolve()
+                  / "ETC_NASA_SLCT" / "_pack_scripts")
+    script_dir.mkdir(parents=True, exist_ok=True)
+
+    for i in range(n):
+        script_path = script_dir / f"pack_{i}of{n}_run.sh"
+        script_path.write_text(render_packed_wrapper(i, n, args))
+        if args.setup_only:
+            print(f"  wrote {script_path} (not submitted)")
+            continue
+        proc = subprocess.run(["qsub", str(script_path)],
+                              capture_output=True, text=True, check=True)
+        print(f"  shard {i}/{n}  ->  PBS job {proc.stdout.strip()}  "
+              f"({script_path.name})")
+
+    if args.setup_only:
+        print(f"Setup complete: {n} packed wrapper(s) written; none submitted.")
+    else:
+        print(f"Submitted {n} packed node job(s).")
+    print("Run `python run_tests.py --plot-only` once the jobs finish.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scheduler",
-        choices=["local", "pbs"],
+        choices=["local", "pbs", "pbs-packed"],
         default="local",
-        help="Execution backend: 'local' (subprocess pool, default) or 'pbs' "
-             "(qsub on Derecho, submit-and-exit).",
+        help="Execution backend: 'local' (subprocess pool, default), 'pbs' "
+             "(one qsub per job on Derecho, submit-and-exit), or 'pbs-packed' "
+             "(fan the sweep across --nodes exclusive nodes, packing multiple "
+             "jobs per node via the local pool + CPU pinning; submit-and-exit).",
     )
     parser.add_argument(
         "--setup-only",
@@ -588,7 +696,42 @@ def main() -> None:
         default=os.environ.get("HOSTNAME") or socket.gethostname(),
         help="Label subdirectory for output plots (default: $HOSTNAME or hostname).",
     )
+    parser.add_argument(
+        "--shard",
+        default="",
+        metavar="I/N",
+        help="Run only shard I of N (0-indexed), round-robin over the job list. "
+             "Used to split the sweep across nodes; pbs-packed sets it per node.",
+    )
+    parser.add_argument(
+        "--pin-cpus",
+        action="store_true",
+        help="Local only: pin each concurrent job to a disjoint core range "
+             "(numactl + OpenMP binding). Needed when packing jobs on a node.",
+    )
+    parser.add_argument(
+        "--nodes",
+        type=int,
+        default=1,
+        help="pbs-packed only: number of exclusive nodes to fan the sweep over "
+             "(one qsub per node). Default: 1.",
+    )
+    parser.add_argument(
+        "--node-cpus",
+        type=int,
+        default=128,
+        help="pbs-packed only: cores per node to request in the select "
+             "statement (Derecho CPU node: 128). Default: 128.",
+    )
     args = parser.parse_args()
+
+    shard_i, shard_n = _parse_shard(args.shard)
+
+    # pbs-packed: fan the sweep across --nodes exclusive nodes as independent
+    # qsub submissions, each self-packing its shard.  Nothing to build here.
+    if args.scheduler == "pbs-packed":
+        submit_packed(args)
+        return
 
     storm_dates = ["DEC1992", "DEC2012", "NOV2018"]
     # Resolutions available per storm — not every storm has every resolution
@@ -612,6 +755,17 @@ def main() -> None:
         amr_max_levels,
         time_dilations,
     )
+
+    # --plot-only reads all output from disk, so it must see the full job set;
+    # sharding only restricts which jobs this invocation actually runs.
+    if shard_n > 1 and not args.plot_only:
+        jobs = jobs[shard_i::shard_n]
+        logging.info("Shard %d/%d: running %d of the full job set.",
+                     shard_i, shard_n, len(jobs))
+        if not args.no_comparison:
+            logging.warning("Sharded run without --no-comparison: comparison "
+                            "figures will reflect whatever output is on disk, "
+                            "not just this shard.")
 
     for job in jobs:
         job.plot_per_run = not args.no_run_plots
@@ -644,6 +798,7 @@ def main() -> None:
         executor = ParallelExecutor(
             max_workers=args.max_workers,
             env={"OMP_NUM_THREADS": str(args.omp_num_threads)},
+            cpu_affinity=args.pin_cpus,
         )
 
     ctrl = BatchController(
