@@ -4,7 +4,6 @@ from pathlib import Path
 import datetime
 
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 import numpy as np
 
 from batch import JobResult
@@ -134,36 +133,8 @@ def plot_observed(ax, gauge_number, times):
         # ax.legend()
 
 
-def plot_key(out_file: Path, key_channels: list[dict]) -> None:
-    """Write a standalone legend figure decoding the visual channels.
-
-    Each section in ``key_channels`` (plus an "observed" section added here)
-    becomes a small captioned legend, so the data plots can stay clean for
-    use in talks/papers.
-    """
-    sections = [{"title": "Data",
-                 "entries": [("observed", {"color": "lightgray",
-                                           "marker": "x", "linestyle": "-"})]}]
-    sections += key_channels
-
-    n = len(sections)
-    fig, axes = plt.subplots(1, n, figsize=(2.4 * n, 2.6))
-    if n == 1:
-        axes = [axes]
-    for ax, section in zip(axes, sections):
-        handles = [Line2D([], [], **kwargs) for _label, kwargs in section["entries"]]
-        labels = [label for label, _kwargs in section["entries"]]
-        ax.axis("off")
-        ax.legend(handles, labels, title=section["title"], loc="center",
-                  frameon=False)
-    fig.tight_layout()
-    fig.savefig(out_file, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-
 def plot(results: list[JobResult], out_path: Path, storm_date: str,
          styles: list[dict], labels: list[str] | None = None,
-         key_channels: list[dict] | None = None,
          subtitle: str = "") -> None:
     """Plot gauge comparisons for a given storm date.
 
@@ -173,8 +144,7 @@ def plot(results: list[JobResult], out_path: Path, storm_date: str,
     When ``labels`` is provided each line is labelled and an in-plot legend is
     drawn; otherwise lines are drawn at low alpha with a min/max ensemble band.
     ``subtitle`` (e.g. "Dilation=1.00, Scaling=1.20") is appended to the title
-    on a second line.  A standalone key figure is still written when
-    ``key_channels`` is supplied.
+    on a second line.
     """
     figure_path = out_path
     figure_path.mkdir(parents=True, exist_ok=True)
@@ -214,6 +184,3 @@ def plot(results: list[JobResult], out_path: Path, storm_date: str,
         fig.tight_layout()
         fig.savefig(figure_path / f"gauge_{gauge_id}_surface_comparison.png", dpi=300)
         plt.close(fig)
-
-    if key_channels:
-        plot_key(figure_path / "key.png", key_channels)

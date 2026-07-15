@@ -23,8 +23,6 @@ def ramp(x, y, window):
     return (-RAMP_WIDTH < d) * (d < 0.0) * f(d) + (d > 0) * np.ones(x.shape) + (d < -RAMP_WIDTH) * np.zeros(x.shape)
 
 RAMP_WIDTH = 1.25
-P_ambient = 1013
-P_center = 900
 domain = np.array([-85.0, 20.0, -60.0, 50.0])
 window = np.array([-75, 30, -65, 40])
 deg_factor = 8

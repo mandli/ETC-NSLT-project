@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 
 from pathlib import Path
-import shutil
-import os
 import subprocess
 
 import numpy as np

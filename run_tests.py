@@ -37,7 +37,7 @@ Typical workflow on Derecho::
     module load ncarenv conda       # or whatever provides clawpack
 
     # 1. Inspect the generated scripts without submitting
-    python run_tests.py --scheduler pbs --dry-run
+    python run_tests.py --scheduler pbs --setup-only
 
     # 2. Submit the ensemble (one PBS job per run)
     python run_tests.py --scheduler pbs --walltime 12:00:00
@@ -114,6 +114,8 @@ class ETCJob(Job):
         self.sea_level = sea_level
         self.time_dilation = time_dilation
         self.levels = levels
+        # Per-run plotting (post_run) is on by default; --no-run-plots clears it.
+        self.plot_per_run = True
 
         setrun_path = Path(__file__).parent / "setrun.py"
         setrun = clawutil.fullpath_import(setrun_path)
@@ -150,7 +152,8 @@ class ETCJob(Job):
         return super().write_data_objects(path)
 
     def post_run(self, result) -> None:
-        plot_job(result, setplot=Path(__file__).parent / "setplot.py")
+        if self.plot_per_run:
+            plot_job(result, setplot=Path(__file__).parent / "setplot.py")
 
     def __repr__(self) -> str:
         return (f"ETCJob({self.storm_path}, "
@@ -177,8 +180,7 @@ class RunGroup:
 
 
 # Visual-encoding palettes for gauge comparison plots.  Each ensemble
-# parameter is mapped to a distinct visual channel so individual runs need no
-# per-line legend entry (the mapping is decoded in a separate key figure):
+# parameter is mapped to a distinct visual channel:
 #   color     <- resolution
 #   linestyle <- sea level
 #   marker    <- time dilation
@@ -190,16 +192,10 @@ _DIL_MARKERS = ["o", "s", "^", "D", "v", "*", "P", "X"]
 _SCALE_LINEWIDTHS = [1.0, 1.75, 2.5, 3.25]
 
 
-def build_styles(jobs: list["ETCJob"]) -> tuple[list[dict], list[dict]]:
+def build_styles(jobs: list["ETCJob"]) -> list[dict]:
     """Map ensemble parameters to per-line plot styles.
 
-    Returns
-    -------
-    styles
-        One matplotlib-kwargs dict per job (parallel to *jobs*).
-    key_channels
-        Spec for the standalone legend figure: one section per channel that
-        actually varies, each a ``{"title", "entries": [(label, kwargs)]}``.
+    Returns one matplotlib-kwargs dict per job (parallel to *jobs*).
     """
     def res_of(job: "ETCJob") -> str:
         return job.storm_path.stem.split("_")[1]
@@ -223,25 +219,7 @@ def build_styles(jobs: list["ETCJob"]) -> tuple[list[dict], list[dict]]:
             s["marker"] = marker_of[j.time_dilation]
         styles.append(s)
 
-    # Each channel: title, sorted values, value->label, value->proxy kwargs
-    # (isolating that one channel against neutral defaults).
-    channels = [
-        ("Resolution", res_vals, lambda v: str(v),
-         lambda v: {"color": color_of[v], "linestyle": "-", "linewidth": 2.0}),
-        ("Sea level (m)", sea_vals, lambda v: f"{v:.1f}",
-         lambda v: {"color": "black", "linestyle": style_of[v], "linewidth": 2.0}),
-        ("Time dilation", dil_vals, lambda v: f"{v:.2f}",
-         lambda v: {"color": "black", "linestyle": "-", "marker": marker_of[v],
-                    "linewidth": 2.0}),
-        ("Scaling", scale_vals, lambda v: f"{v:.2f}",
-         lambda v: {"color": "black", "linestyle": "-", "linewidth": width_of[v]}),
-    ]
-    key_channels = [
-        {"title": title, "entries": [(fmt(v), kw(v)) for v in vals]}
-        for title, vals, fmt, kw in channels
-        if len(vals) > 1
-    ]
-    return styles, key_channels
+    return styles
 
 
 def build_run_groups(
@@ -252,7 +230,7 @@ def build_run_groups(
     scalings: list[float],
     amr_max_levels: list[int],
     time_dilations: list[float],
-) -> tuple[list[Job], list[RunGroup]]:
+) -> tuple[list["ETCJob"], list[RunGroup]]:
     """Build all jobs and group them by storm for gauge comparison.
 
     ``resolutions`` maps each storm date to the resolutions available for it,
@@ -263,7 +241,7 @@ def build_run_groups(
     plots.  The flat job list is submitted to a single controller so the
     worker queue stays full.
     """
-    all_jobs: list[Job] = []
+    all_jobs: list["ETCJob"] = []
     groups: dict[str, RunGroup] = {sd: RunGroup(sd) for sd in storm_dates}
 
     for storm_date in storm_dates:
@@ -498,7 +476,7 @@ def plot_gauge_comparisons(
         for (dil, scale), sub_results in sorted(sub_groups.items()):
             out_dir = (gauge_figs_path / group.storm_date
                        / f"dil{dil:.2f}_sc{scale:.2f}")
-            styles, key_channels = build_styles([r.job for r in sub_results])
+            styles = build_styles([r.job for r in sub_results])
             labels = [f"{_res_of(r.job)}, SL={r.job.sea_level:.1f}"
                       for r in sub_results]
             subtitle = f"Dilation={dil:.2f}, Scaling={scale:.2f}"
@@ -539,7 +517,8 @@ def main() -> None:
     parser.add_argument(
         "--setup-only",
         action="store_true",
-        help="Write .data files only; do not run the solver.",
+        help="Set up jobs but do not execute: local writes .data files; PBS "
+             "writes .data files and the qsub scripts without submitting them.",
     )
     parser.add_argument(
         "--plot-only",
@@ -548,9 +527,15 @@ def main() -> None:
              "existing output. Run this after a PBS batch finishes.",
     )
     parser.add_argument(
-        "--dry-run",
+        "--no-run-plots",
         action="store_true",
-        help="PBS only: write the qsub scripts but do not submit them.",
+        help="Skip per-job plotting (local post_run / PBS compute-node plotclaw). "
+             "The aggregate comparison figures are unaffected.",
+    )
+    parser.add_argument(
+        "--no-comparison",
+        action="store_true",
+        help="Local only: run the jobs but skip the aggregate comparison figures.",
     )
     parser.add_argument(
         "--resume",
@@ -628,6 +613,9 @@ def main() -> None:
         time_dilations,
     )
 
+    for job in jobs:
+        job.plot_per_run = not args.no_run_plots
+
     # --plot-only: skip the controller/executor entirely and just (re)build the
     # comparison figures from whatever output already exists on disk.
     if args.plot_only:
@@ -646,10 +634,11 @@ def main() -> None:
                 account=args.account,
                 env_vars={"OMP_NUM_THREADS": str(args.omp_num_threads)},
                 modules=args.pbs_modules,
-                plot=True,
+                plot=not args.no_run_plots,
                 setplot=str(Path(__file__).parent / "setplot.py"),
             ),
-            dry_run=args.dry_run,
+            # --setup-only writes the qsub scripts without submitting them.
+            dry_run=args.setup_only,
         )
     else:
         executor = ParallelExecutor(
@@ -665,27 +654,31 @@ def main() -> None:
     )
 
     if args.setup_only:
-        paths = ctrl.setup()
-        print(f"Setup complete for {len(paths)} job(s).")
+        if args.scheduler == "pbs":
+            # dry_run executor: writes .data files and qsub scripts, no submit.
+            results = ctrl.run(wait=False)
+            print(f"Setup complete: {len(results)} PBS script(s) written; "
+                  "none submitted.")
+        else:
+            paths = ctrl.setup()
+            print(f"Setup complete for {len(paths)} job(s).")
         return
 
     if args.scheduler == "pbs":
         # Submit-and-exit: qsub returns immediately. Each job self-plots on the
         # compute node; run `--plot-only` afterward for the comparison figures.
         results = ctrl.run(wait=False)
-        if args.dry_run:
-            print(f"Dry run: {len(results)} PBS script(s) written, none submitted.")
-        else:
-            print(f"Submitted {len(results)} job(s) to PBS.")
-            for r in results:
-                print(f"  {r.job.prefix}  ->  PBS job {r.job_id}")
+        print(f"Submitted {len(results)} job(s) to PBS.")
+        for r in results:
+            print(f"  {r.job.prefix}  ->  PBS job {r.job_id}")
         print("Run `python run_tests.py --plot-only` once the jobs finish.")
         return
 
     # Local: block until every job completes, then build comparison figures.
     results = ctrl.run(wait=True)
     report_results(results)
-    generate_comparison_plots(groups, args.run_label)
+    if not args.no_comparison:
+        generate_comparison_plots(groups, args.run_label)
 
 
 if __name__ == "__main__":

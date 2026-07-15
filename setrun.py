@@ -9,15 +9,10 @@ that will be read in by the Fortran code.
 
 from pathlib import Path
 import os
-import datetime
-import shutil
-import gzip
 
 import numpy as np
 
 from clawpack.geoclaw.surge.storm import Storm
-import clawpack.clawutil as clawutil
-import clawpack.geoclaw.util as util
 
 # Time Conversions
 def days2seconds(days):

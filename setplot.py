@@ -35,7 +35,6 @@ import clawpack.geoclaw.data as geodata
 import clawpack.geoclaw.surge.plot as surgeplot
 import clawpack.geoclaw.util as geoutil
 import clawpack.amrclaw.data as amrdata
-from clawpack.geoclaw.util import fetch_noaa_tide_data
 import clawpack.geoclaw.surge.storm as stormtools
 
 def setplot(plotdata=None):
@@ -267,7 +266,7 @@ def setplot(plotdata=None):
         # Map GeoClaw gauge number to NOAA gauge number and location/name
         station_id, station_name = gauge_mapping[current_data.gaugesoln.id]
 
-        landfall_time, begin_date, end_date = get_storm_times(storm)
+        landfall_time, begin_date, end_date, _gauge_xlimits = get_storm_times(storm)
 
         # Fetch data if needed
         date_time, water_level, tide = geoutil.fetch_noaa_tide_data(station_id,
