@@ -33,7 +33,7 @@ Typical workflow on Derecho::
     export DATA_PATH=...            # storm + topo inputs
     export OUTPUT_PATH=...          # scratch: per-job run directories
     export SHARED_RUNS_PATH=...     # where comparison figures are collected
-    export PBS_ACCOUNT=NCAR0001     # your Derecho project code
+    export BATCH_ACCOUNT=NCAR0001   # your Derecho project code
     module load ncarenv conda       # or whatever provides clawpack
 
     # 1. Inspect the generated scripts without submitting
@@ -51,7 +51,7 @@ Typical workflow on Derecho::
     # Resume after a walltime kill (only unfinished jobs are resubmitted)
     python run_tests.py --scheduler pbs --resume
 
-The Derecho project code is taken from ``--account`` or ``$PBS_ACCOUNT``; queue,
+The Derecho project code is taken from ``--account`` or ``$BATCH_ACCOUNT``; queue,
 walltime, threads, and modules are all overridable on the command line.
 """
 
@@ -61,19 +61,16 @@ import argparse
 import itertools
 import logging
 import os
-import re
 import socket
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 
-from batch import Job, ParallelExecutor, BatchController, ClobberPolicy, JobResult
-from batch import JobPaths
-from batch import PBSExecutor, PBSResources
+from batch import Job, JobResult, JobPaths
+from batch import add_execution_args, execute, submit_packed, PackedResources
+from batch import plot_performance
 from batch.plot import plot_job
 
 import clawpack.clawutil.util as clawutil
@@ -265,151 +262,6 @@ def build_run_groups(
     return all_jobs, list(groups.values())
 
 
-def report_results(results: list[JobResult]) -> None:
-    n_ok = sum(1 for r in results if r.success)
-    n_fail = sum(1 for r in results if not r.success and r.returncode is not None)
-    print(f"\nCompleted: {n_ok}/{len(results)} successful, {n_fail} failed.")
-    for r in results:
-        if r.returncode is not None and r.returncode != 0:
-            print(f"  FAILED: {r.job.prefix}  (see {r.paths.log})")
-
-
-def parse_timing(job_dir: Path) -> dict | None:
-    """Parse timing.txt produced by the GeoClaw solver.
-
-    Returns a dict with:
-      levels: list of {level, wall, cpu, cells} (per AMR level)
-      total_integration: {wall, cpu, cells}
-      components: {stepgrid, bc, regrid, output: {wall, cpu}}
-      total: {wall, cpu}
-      n_threads: int
-    Returns None if timing.txt is absent.
-    """
-    txt_path = job_dir / "timing.txt"
-    if not txt_path.exists():
-        return None
-
-    text = txt_path.read_text()
-    result: dict = {"levels": [], "components": {}}
-
-    for m in re.finditer(
-            r"^\s+(\d+)\s+([\d.E+]+)\s+([\d.E+]+)\s+([\d.E+]+)",
-            text, re.MULTILINE):
-        result["levels"].append({
-            "level": int(m.group(1)),
-            "wall": float(m.group(2)),
-            "cpu": float(m.group(3)),
-            "cells": float(m.group(4)),
-        })
-
-    m = re.search(r"^total\s+([\d.E+]+)\s+([\d.E+]+)\s+([\d.E+]+)",
-                  text, re.MULTILINE)
-    if m:
-        result["total_integration"] = {
-            "wall": float(m.group(1)), "cpu": float(m.group(2)),
-            "cells": float(m.group(3)),
-        }
-
-    for key, pattern in [
-        ("stepgrid", r"stepgrid\s+([\d.E+]+)\s+([\d.E+]+)"),
-        ("bc",       r"BC/ghost cells\s+([\d.E+]+)\s+([\d.E+]+)"),
-        ("regrid",   r"Regridding\s+([\d.E+]+)\s+([\d.E+]+)"),
-        ("output",   r"Output \(valout\)\s+([\d.E+]+)\s+([\d.E+]+)"),
-    ]:
-        m = re.search(pattern, text)
-        if m:
-            result["components"][key] = {
-                "wall": float(m.group(1)), "cpu": float(m.group(2))}
-
-    m = re.search(r"Total time:\s+([\d.E+]+)\s+([\d.E+]+)", text)
-    if m:
-        result["total"] = {"wall": float(m.group(1)), "cpu": float(m.group(2))}
-
-    m = re.search(r"Using (\d+) thread", text)
-    result["n_threads"] = int(m.group(1)) if m else 1
-
-    return result
-
-
-def _plot_perf_group(
-    timings: list[dict],
-    jobs: list["ETCJob"],
-    storm_date: str,
-    out_path: Path,
-) -> None:
-    """Three-panel performance figure for one storm group.
-
-    Left:   total wall time bars + CPU efficiency overlay
-    Middle: stacked wall time by AMR level
-    Right:  stacked wall time by solver component
-    """
-    n = len(timings)
-    x = np.arange(n)
-
-    prefix_strip = f"storm{storm_date}_"
-    short = [j.prefix.replace(prefix_strip, "").replace("_", "\n") for j in jobs]
-    tick_fs = max(4, 9 - n // 8)
-
-    fig, axes = plt.subplots(1, 3, figsize=(max(14, n * 0.9 + 4), 6))
-    fig.suptitle(f"Performance Analysis — {storm_date}", fontsize=13)
-
-    # Total wall time (bars) + CPU efficiency (line on twin axis)
-    ax = axes[0]
-    wall_min = [t["total"]["wall"] / 60 for t in timings]
-    ax.bar(x, wall_min, color="steelblue")
-    ax.set_xticks(x)
-    ax.set_xticklabels(short, rotation=90, fontsize=tick_fs)
-    ax.set_ylabel("Wall Time (min)")
-    ax.set_title("Total Wall Time")
-
-    ax2 = ax.twinx()
-    eff = [t["total"]["cpu"] / (t.get("n_threads", 1) * t["total"]["wall"]) * 100
-           for t in timings]
-    ax2.plot(x, eff, "o-", color="orange", label="CPU efficiency")
-    ax2.set_ylabel("CPU Efficiency (%)", color="orange")
-    ax2.tick_params(axis="y", labelcolor="orange")
-    ax2.set_ylim(0, 110)
-
-    # Stacked wall time by AMR level
-    ax = axes[1]
-    max_lev = max(len(t["levels"]) for t in timings)
-    bottoms = np.zeros(n)
-    for li in range(max_lev):
-        vals = np.array([
-            t["levels"][li]["wall"] / 60 if li < len(t["levels"]) else 0.0
-            for t in timings
-        ])
-        ax.bar(x, vals, bottom=bottoms, label=f"Level {li + 1}")
-        bottoms += vals
-    ax.set_xticks(x)
-    ax.set_xticklabels(short, rotation=90, fontsize=tick_fs)
-    ax.set_ylabel("Wall Time (min)")
-    ax.set_title("Time by AMR Level")
-    ax.legend(fontsize=8)
-
-    # Stacked wall time by solver component
-    ax = axes[2]
-    bottoms = np.zeros(n)
-    for key, lbl in [("stepgrid", "Step (PDE)"), ("bc", "BC/Ghost"),
-                     ("regrid", "Regrid"), ("output", "Output")]:
-        vals = np.array([
-            t["components"].get(key, {}).get("wall", 0.0) / 60 for t in timings
-        ])
-        ax.bar(x, vals, bottom=bottoms, label=lbl)
-        bottoms += vals
-    ax.set_xticks(x)
-    ax.set_xticklabels(short, rotation=90, fontsize=tick_fs)
-    ax.set_ylabel("Wall Time (min)")
-    ax.set_title("Time by Component")
-    ax.legend(fontsize=8)
-
-    fig.tight_layout()
-    fig_path = out_path / f"performance_{storm_date}.png"
-    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logging.info("Performance plot saved: %s", fig_path)
-
-
 def plot_performance_analysis(
     groups: list[RunGroup],
     perf_figs_path: Path,
@@ -417,21 +269,24 @@ def plot_performance_analysis(
 ) -> None:
     """Generate timing comparison plots for each storm group.
 
-    Reads timing.txt from each job's output directory (skipping any that are
-    missing) and writes one performance figure per group to *perf_figs_path*.
+    Delegates the three-panel figure to ``batch.analysis.plot_performance``,
+    which parses ``timing.txt`` from each job directory (skipping any that are
+    missing).  Labels strip the shared ``storm<date>_`` prefix so each bar shows
+    only the run parameters.
     """
     for group in groups:
-        timings, valid_jobs = [], []
-        for job in group.jobs:
-            t = parse_timing(run_root / job.prefix)
-            if t is not None:
-                timings.append(t)
-                valid_jobs.append(job)
-        if not timings:
-            logging.warning("No timing data for storm %s; skipping performance plot.",
-                            group.storm_date)
-            continue
-        _plot_perf_group(timings, valid_jobs, group.storm_date, perf_figs_path)
+        prefix_strip = f"storm{group.storm_date}_"
+        job_dirs = [run_root / job.prefix for job in group.jobs]
+        labels = [
+            job.prefix.replace(prefix_strip, "").replace("_", "\n")
+            for job in group.jobs
+        ]
+        plot_performance(
+            job_dirs,
+            labels=labels,
+            out_path=perf_figs_path / f"performance_{group.storm_date}.png",
+            title=f"Performance Analysis — {group.storm_date}",
+        )
 
 
 def plot_gauge_comparisons(
@@ -507,80 +362,16 @@ def generate_comparison_plots(groups: list[RunGroup], run_label: str) -> None:
     plot_performance_analysis(groups, perf_figs_path, run_root)
 
 
-def _parse_shard(spec: str) -> tuple[int, int]:
-    """Parse a 1-based ``I/N`` shard spec into ``(i, n)``; empty string → ``(1, 1)``."""
-    if not spec:
-        return 1, 1
-    try:
-        i_str, n_str = spec.split("/")
-        i, n = int(i_str), int(n_str)
-    except ValueError:
-        raise SystemExit(f"--shard must be I/N (e.g. 1/16); got {spec!r}")
-    if n < 1 or not (1 <= i <= n):
-        raise SystemExit(f"--shard I/N requires N >= 1 and 1 <= I <= N; got {spec!r}")
-    return i, n
+def submit_packed_ensemble(args) -> None:
+    """Fan the sweep across ``--nodes`` exclusive nodes, packing each shard.
 
-
-def render_packed_wrapper(shard_i: int, n_shards: int, args) -> str:
-    """Render a PBS wrapper that packs one shard of the sweep onto one node.
-
-    The wrapper requests a single exclusive node and, on the compute node, runs
-    this same script in ``--scheduler local`` mode over shard ``shard_i`` of
-    ``n_shards``, with ``--pin-cpus`` so the local pool binds each concurrent
-    job to a disjoint core range.  Per-shard output is partial, so comparison
-    figures are suppressed here (``--no-comparison``) and built afterward by a
-    single ``--plot-only`` pass.
+    ``batch.submit_packed`` renders one wrapper per node (PBS or SLURM) and
+    submits it; each wrapper re-invokes this script in ``--scheduler local
+    --shard i/n --pin-cpus`` mode so the local pool packs that shard onto the
+    node.  Submit-and-exit — run ``--plot-only`` afterward for the cross-run
+    figures.  The oversubscription check and the trailer print are project
+    conveniences batch does not provide.
     """
-    here = Path(__file__).resolve()
-    chunk = f"1:ncpus={args.node_cpus}:mpiprocs=1:ompthreads=1"
-
-    directives = [
-        f"#PBS -N etc_pack_{shard_i}of{n_shards}",
-        f"#PBS -o {here.parent / f'pack_{shard_i}of{n_shards}_log.txt'}",
-        "#PBS -j oe",
-        f"#PBS -q {args.queue}",
-        f"#PBS -l select={chunk}",
-        f"#PBS -l walltime={args.walltime}",
-    ]
-    if args.account:
-        directives.append(f"#PBS -A {args.account}")
-
-    lines = ["#!/bin/bash"] + directives + [""]
-    if args.pbs_modules:
-        lines.extend(f"module load {m}" for m in args.pbs_modules)
-        lines.append("")
-    lines.append(f"cd {here.parent}")
-
-    inner = [
-        sys.executable, str(here),
-        "--scheduler", "local",
-        "--shard", f"{shard_i}/{n_shards}",
-        "--max-workers", str(args.max_workers),
-        "--omp-num-threads", str(args.omp_num_threads),
-        "--pin-cpus",
-        "--no-comparison",
-        "--run-label", args.run_label,
-        "--storms-path", str(args.storms_path),
-    ]
-    if args.resume:
-        inner.append("--resume")
-    if args.no_run_plots:
-        inner.append("--no-run-plots")
-
-    lines.append(" ".join(str(a) for a in inner))
-    lines.append("")
-    return "\n".join(lines)
-
-
-def submit_packed(args) -> None:
-    """Generate one PBS wrapper per shard and (unless --setup-only) qsub them.
-
-    Submit-and-exit: each node's wrapper self-packs its shard via the local
-    pool.  Run ``--plot-only`` afterward to build the cross-run figures.
-    """
-    n = args.nodes
-    if n < 1:
-        raise SystemExit("--nodes must be >= 1")
     if args.max_workers * args.omp_num_threads > args.node_cpus:
         logging.warning(
             "max-workers(%d) * omp-num-threads(%d) = %d exceeds node-cpus(%d); "
@@ -589,63 +380,74 @@ def submit_packed(args) -> None:
             args.max_workers * args.omp_num_threads, args.node_cpus,
         )
 
+    here = Path(__file__).resolve()
+    scheduler = args.scheduler.split("-")[0]  # "pbs" or "slurm"
     script_dir = (Path(os.environ['OUTPUT_PATH']).expanduser().resolve()
                   / "ETC_NASA_SLCT" / "_pack_scripts")
-    script_dir.mkdir(parents=True, exist_ok=True)
 
-    for i in range(1, n + 1):
-        script_path = script_dir / f"pack_{i}of{n}_run.sh"
-        script_path.write_text(render_packed_wrapper(i, n, args))
-        if args.setup_only:
-            print(f"  wrote {script_path} (not submitted)")
-            continue
-        proc = subprocess.run(["qsub", str(script_path)],
-                              capture_output=True, text=True)
-        if proc.returncode != 0:
-            # Surface qsub's own message (rejected account/queue/walltime, etc.)
-            # and stop rather than firing the remaining shards at the same wall.
-            msg = (proc.stderr.strip() or proc.stdout.strip()
-                   or "(qsub produced no output)")
-            raise SystemExit(
-                f"qsub failed for {script_path} (exit {proc.returncode}):\n{msg}"
-            )
-        print(f"  shard {i}/{n}  ->  PBS job {proc.stdout.strip()}  "
-              f"({script_path.name})")
+    def inner(shard_i: int, n_shards: int) -> list[str]:
+        cmd = [
+            sys.executable, str(here),
+            "--scheduler", "local",
+            "--shard", f"{shard_i}/{n_shards}",
+            "--max-workers", str(args.max_workers),
+            "--omp-num-threads", str(args.omp_num_threads),
+            "--node-cpus", str(args.node_cpus),
+            "--pin-cpus",
+            "--no-comparison",
+            "--run-label", args.run_label,
+            "--storms-path", str(args.storms_path),
+        ]
+        if args.resume:
+            cmd.append("--resume")
+        if args.no_run_plots:
+            cmd.append("--no-run-plots")
+        return cmd
+
+    resources = PackedResources(
+        queue=args.queue,
+        walltime=args.walltime,
+        account=args.account,
+        node_cpus=args.node_cpus,
+        modules=args.modules,
+    )
+    job_ids = submit_packed(
+        args.nodes,
+        inner,
+        resources,
+        scheduler,
+        script_dir,
+        dry_run=args.setup_only,
+        name_prefix="etc_pack",
+        workdir=here.parent,
+    )
 
     if args.setup_only:
-        print(f"Setup complete: {n} packed wrapper(s) written; none submitted.")
+        print(f"Setup complete: {len(job_ids)} packed wrapper(s) written; "
+              "none submitted.")
     else:
-        print(f"Submitted {n} packed node job(s).")
+        print(f"Submitted {len(job_ids)} packed node job(s).")
     print("Run `python run_tests.py --plot-only` once the jobs finish.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--scheduler",
-        choices=["local", "pbs", "pbs-packed"],
-        default="local",
-        help="Execution backend: 'local' (subprocess pool, default), 'pbs' "
-             "(one qsub per job on Derecho, submit-and-exit), or 'pbs-packed' "
-             "(fan the sweep across --nodes exclusive nodes, packing multiple "
-             "jobs per node via the local pool + CPU pinning; submit-and-exit).",
-    )
-    parser.add_argument(
-        "--setup-only",
-        action="store_true",
-        help="Set up jobs but do not execute: local writes .data files; PBS "
-             "writes .data files and the qsub scripts without submitting them.",
-    )
+    # Shared execution flags: --scheduler {local,pbs,slurm,pbs-packed,
+    # slurm-packed}, --setup-only, --resume, --max-workers, --omp-num-threads,
+    # --account ($BATCH_ACCOUNT), --queue, --walltime, --modules ($BATCH_MODULES),
+    # and the packing flags --nodes/--node-cpus/--shard/--pin-cpus.
+    add_execution_args(parser)
+    # Project-specific flags (no collision with the shared group).
     parser.add_argument(
         "--plot-only",
         action="store_true",
         help="Skip submission; only (re)generate comparison figures from "
-             "existing output. Run this after a PBS batch finishes.",
+             "existing output. Run this after a batch finishes.",
     )
     parser.add_argument(
         "--no-run-plots",
         action="store_true",
-        help="Skip per-job plotting (local post_run / PBS compute-node plotclaw). "
+        help="Skip per-job plotting (local post_run / compute-node plotclaw). "
              "The aggregate comparison figures are unaffected.",
     )
     parser.add_argument(
@@ -654,91 +456,22 @@ def main() -> None:
         help="Local only: run the jobs but skip the aggregate comparison figures.",
     )
     parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Skip jobs whose output directory already exists.",
-    )
-    parser.add_argument(
         "--storms-path",
         type=Path,
         default=Path(os.environ['DATA_PATH']) / "storms" / "ETC_NASA_SLCT",
         help="Directory containing netCDF storm files.",
     )
     parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=int(os.environ.get("BATCH_MAX_JOBS", 4)),
-        help="Local only: max concurrent jobs (default: $BATCH_MAX_JOBS or 4).",
-    )
-    parser.add_argument(
-        "--omp-num-threads",
-        type=int,
-        default=int(os.environ.get("OMP_NUM_THREADS", 1)),
-        help="OpenMP threads per job (default: $OMP_NUM_THREADS or 1). For PBS "
-             "this also sets ncpus/ompthreads in the select request.",
-    )
-    parser.add_argument(
-        "--account",
-        default=os.environ.get("PBS_ACCOUNT", ""),
-        help="PBS only: Derecho project code (#PBS -A; default: $PBS_ACCOUNT).",
-    )
-    parser.add_argument(
-        "--queue",
-        default="main",
-        help="PBS only: queue name (default: main).",
-    )
-    parser.add_argument(
-        "--walltime",
-        default="12:00:00",
-        help="PBS only: walltime limit HH:MM:SS (default: 12:00:00).",
-    )
-    parser.add_argument(
-        "--pbs-modules",
-        nargs="*",
-        default=(os.environ.get("PBS_MODULES", "").split()),
-        help="PBS only: modules to 'module load' in the job script "
-             "(default: $PBS_MODULES, space-separated).",
-    )
-    parser.add_argument(
         "--run-label",
         default=os.environ.get("HOSTNAME") or socket.gethostname(),
         help="Label subdirectory for output plots (default: $HOSTNAME or hostname).",
     )
-    parser.add_argument(
-        "--shard",
-        default="",
-        metavar="I/N",
-        help="Run only shard I of N (1-indexed), round-robin over the job list. "
-             "Used to split the sweep across nodes; pbs-packed sets it per node.",
-    )
-    parser.add_argument(
-        "--pin-cpus",
-        action="store_true",
-        help="Local only: pin each concurrent job to a disjoint core range "
-             "(numactl + OpenMP binding). Needed when packing jobs on a node.",
-    )
-    parser.add_argument(
-        "--nodes",
-        type=int,
-        default=1,
-        help="pbs-packed only: number of exclusive nodes to fan the sweep over "
-             "(one qsub per node). Default: 1.",
-    )
-    parser.add_argument(
-        "--node-cpus",
-        type=int,
-        default=128,
-        help="pbs-packed only: cores per node to request in the select "
-             "statement (Derecho CPU node: 128). Default: 128.",
-    )
     args = parser.parse_args()
 
-    shard_i, shard_n = _parse_shard(args.shard)
-
-    # pbs-packed: fan the sweep across --nodes exclusive nodes as independent
-    # qsub submissions, each self-packing its shard.  Nothing to build here.
-    if args.scheduler == "pbs-packed":
-        submit_packed(args)
+    # Packed: fan the sweep across --nodes exclusive nodes as independent
+    # submissions, each self-packing its shard.  Nothing to build here.
+    if args.scheduler.endswith("-packed"):
+        submit_packed_ensemble(args)
         return
 
     storm_dates = ["DEC1992", "DEC2012", "NOV2018"]
@@ -764,84 +497,36 @@ def main() -> None:
         time_dilations,
     )
 
-    # --plot-only reads all output from disk, so it must see the full job set;
-    # sharding only restricts which jobs this invocation actually runs.
-    if shard_n > 1 and not args.plot_only:
-        jobs = jobs[shard_i - 1::shard_n]
-        logging.info("Shard %d/%d: running %d of the full job set.",
-                     shard_i, shard_n, len(jobs))
-        if not args.no_comparison:
-            logging.warning("Sharded run without --no-comparison: comparison "
-                            "figures will reflect whatever output is on disk, "
-                            "not just this shard.")
-
     for job in jobs:
         job.plot_per_run = not args.no_run_plots
 
     # --plot-only: skip the controller/executor entirely and just (re)build the
-    # comparison figures from whatever output already exists on disk.
+    # comparison figures from whatever output already exists on disk.  Runs before
+    # execute() and always sees the full job set (sharding, applied inside
+    # execute() on the local path, does not affect this disk-driven pass).
     if args.plot_only:
         generate_comparison_plots(groups, args.run_label)
         return
 
-    if args.scheduler == "pbs":
-        executor = PBSExecutor(
-            default_resources=PBSResources(
-                queue=args.queue,
-                nodes=1,
-                ncpus=args.omp_num_threads,
-                mpiprocs=1,
-                ompthreads=args.omp_num_threads,
-                walltime=args.walltime,
-                account=args.account,
-                env_vars={"OMP_NUM_THREADS": str(args.omp_num_threads)},
-                modules=args.pbs_modules,
-                plot=not args.no_run_plots,
-                setplot=str(Path(__file__).parent / "setplot.py"),
-            ),
-            # --setup-only writes the qsub scripts without submitting them.
-            dry_run=args.setup_only,
-        )
-    else:
-        executor = ParallelExecutor(
-            max_workers=args.max_workers,
-            env={"OMP_NUM_THREADS": str(args.omp_num_threads)},
-            cpu_affinity=args.pin_cpus,
-        )
-
-    ctrl = BatchController(
-        jobs=jobs,
-        executor=executor,
+    # execute() dispatches on --scheduler: local blocks and reports results;
+    # pbs/slurm submit-and-exit; --shard restricts the local job set; --setup-only
+    # writes .data (local) or submission scripts (scheduler); plot=/setplot= turn
+    # on compute-node self-plotting for the scheduler backends.
+    execute(
+        args,
+        jobs,
         experiment="ETC_NASA_SLCT",
-        clobber=ClobberPolicy.SKIP if args.resume else ClobberPolicy.OVERWRITE,
+        plot=not args.no_run_plots,
+        setplot=str(Path(__file__).parent / "setplot.py"),
     )
 
-    if args.setup_only:
-        if args.scheduler == "pbs":
-            # dry_run executor: writes .data files and qsub scripts, no submit.
-            results = ctrl.run(wait=False)
-            print(f"Setup complete: {len(results)} PBS script(s) written; "
-                  "none submitted.")
-        else:
-            paths = ctrl.setup()
-            print(f"Setup complete for {len(paths)} job(s).")
-        return
-
-    if args.scheduler == "pbs":
-        # Submit-and-exit: qsub returns immediately. Each job self-plots on the
-        # compute node; run `--plot-only` afterward for the comparison figures.
-        results = ctrl.run(wait=False)
-        print(f"Submitted {len(results)} job(s) to PBS.")
-        for r in results:
-            print(f"  {r.job.prefix}  ->  PBS job {r.job_id}")
+    if args.scheduler == "local":
+        if not args.setup_only and not args.no_comparison:
+            generate_comparison_plots(groups, args.run_label)
+    elif not args.setup_only:
+        # Scheduler submit-and-exit: execute() already reported the submitted
+        # job IDs; build the comparison figures with --plot-only once they finish.
         print("Run `python run_tests.py --plot-only` once the jobs finish.")
-        return
-
-    # Local: block until every job completes, then build comparison figures.
-    results = ctrl.run(wait=True)
-    report_results(results)
-    if not args.no_comparison:
-        generate_comparison_plots(groups, args.run_label)
 
 
 if __name__ == "__main__":
