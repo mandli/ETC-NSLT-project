@@ -600,7 +600,15 @@ def submit_packed(args) -> None:
             print(f"  wrote {script_path} (not submitted)")
             continue
         proc = subprocess.run(["qsub", str(script_path)],
-                              capture_output=True, text=True, check=True)
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            # Surface qsub's own message (rejected account/queue/walltime, etc.)
+            # and stop rather than firing the remaining shards at the same wall.
+            msg = (proc.stderr.strip() or proc.stdout.strip()
+                   or "(qsub produced no output)")
+            raise SystemExit(
+                f"qsub failed for {script_path} (exit {proc.returncode}):\n{msg}"
+            )
         print(f"  shard {i}/{n}  ->  PBS job {proc.stdout.strip()}  "
               f"({script_path.name})")
 
