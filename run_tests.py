@@ -508,16 +508,16 @@ def generate_comparison_plots(groups: list[RunGroup], run_label: str) -> None:
 
 
 def _parse_shard(spec: str) -> tuple[int, int]:
-    """Parse an ``I/N`` shard spec into ``(i, n)``; empty string → ``(0, 1)``."""
+    """Parse a 1-based ``I/N`` shard spec into ``(i, n)``; empty string → ``(1, 1)``."""
     if not spec:
-        return 0, 1
+        return 1, 1
     try:
         i_str, n_str = spec.split("/")
         i, n = int(i_str), int(n_str)
     except ValueError:
-        raise SystemExit(f"--shard must be I/N (e.g. 0/16); got {spec!r}")
-    if n < 1 or not (0 <= i < n):
-        raise SystemExit(f"--shard I/N requires N >= 1 and 0 <= I < N; got {spec!r}")
+        raise SystemExit(f"--shard must be I/N (e.g. 1/16); got {spec!r}")
+    if n < 1 or not (1 <= i <= n):
+        raise SystemExit(f"--shard I/N requires N >= 1 and 1 <= I <= N; got {spec!r}")
     return i, n
 
 
@@ -593,7 +593,7 @@ def submit_packed(args) -> None:
                   / "ETC_NASA_SLCT" / "_pack_scripts")
     script_dir.mkdir(parents=True, exist_ok=True)
 
-    for i in range(n):
+    for i in range(1, n + 1):
         script_path = script_dir / f"pack_{i}of{n}_run.sh"
         script_path.write_text(render_packed_wrapper(i, n, args))
         if args.setup_only:
@@ -708,7 +708,7 @@ def main() -> None:
         "--shard",
         default="",
         metavar="I/N",
-        help="Run only shard I of N (0-indexed), round-robin over the job list. "
+        help="Run only shard I of N (1-indexed), round-robin over the job list. "
              "Used to split the sweep across nodes; pbs-packed sets it per node.",
     )
     parser.add_argument(
@@ -767,7 +767,7 @@ def main() -> None:
     # --plot-only reads all output from disk, so it must see the full job set;
     # sharding only restricts which jobs this invocation actually runs.
     if shard_n > 1 and not args.plot_only:
-        jobs = jobs[shard_i::shard_n]
+        jobs = jobs[shard_i - 1::shard_n]
         logging.info("Shard %d/%d: running %d of the full job set.",
                      shard_i, shard_n, len(jobs))
         if not args.no_comparison:
