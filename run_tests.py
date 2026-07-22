@@ -21,26 +21,32 @@ core count to avoid oversubscription.
 
 PBS runs on Derecho
 -------------------
-NCAR Derecho uses PBS Pro.  Each job becomes an independent ``qsub``
-submission; the script submits everything and returns immediately (it does not
-tie up a login-node process).  Each job self-plots on the compute node, and the
-cross-run comparison figures are produced by a separate ``--plot-only`` pass
-once the jobs have finished.
+NCAR Derecho uses PBS Pro.  The ``batch`` scheduler backend sources a
+per-machine ``env_file`` in the (non-login) compute-node shell to set up
+modules + the venv, so the job does *not* depend on interactive rc files.
+Point ``--env-file`` / ``$BATCH_ENV_FILE`` at your copy (on this setup,
+``~/.config/sci/activate.sh``) and ``--python`` at that env's interpreter.
+
+``--scheduler pbs-packed`` (used here) fans the sweep across ``--nodes``
+exclusive nodes; each node re-invokes this script to self-pack its shard with
+the local pool.  Submit-and-exit — cross-run comparison figures come from a
+separate ``--plot-only`` pass once the jobs finish.
 
 Typical workflow on Derecho::
 
-    # 0. Environment (in your job/login shell)
-    export DATA_PATH=...            # storm + topo inputs
-    export OUTPUT_PATH=...          # scratch: per-job run directories
-    export SHARED_RUNS_PATH=...     # where comparison figures are collected
-    export BATCH_ACCOUNT=NCAR0001   # your Derecho project code
-    module load ncarenv conda       # or whatever provides clawpack
+    # 0. Environment (login shell; DATA_PATH/OUTPUT_PATH/SHARED_RUNS_PATH come
+    #    from your dotfiles and the env_file so packed re-runs see them too)
+    export BATCH_ACCOUNT=NCAR0001                    # your Derecho project code
+    export BATCH_ENV_FILE=~/.config/sci/activate.sh  # sourced on the compute node
 
-    # 1. Inspect the generated scripts without submitting
-    python run_tests.py --scheduler pbs --setup-only
+    # 1. Inspect the generated wrappers without submitting
+    python run_tests.py --scheduler pbs-packed --nodes 8 --setup-only \
+        --python ~/.venvs/sci/bin/python
 
-    # 2. Submit the ensemble (one PBS job per run)
-    python run_tests.py --scheduler pbs --walltime 12:00:00
+    # 2. Submit the ensemble (one PBS job per node, each self-packing its shard)
+    python run_tests.py --scheduler pbs-packed --nodes 8 \
+        --node-cpus 128 --max-workers 16 --omp-num-threads 8 \
+        --walltime 12:00:00 --python ~/.venvs/sci/bin/python
 
     # 3. Watch the queue
     qstat -u $USER
@@ -48,11 +54,14 @@ Typical workflow on Derecho::
     # 4. After the jobs finish, build the comparison figures
     python run_tests.py --plot-only
 
-    # Resume after a walltime kill (only unfinished jobs are resubmitted)
-    python run_tests.py --scheduler pbs --resume
+    # Resume after a walltime kill (only unfinished job dirs are re-packed)
+    python run_tests.py --scheduler pbs-packed --nodes 8 --resume \
+        --python ~/.venvs/sci/bin/python
 
-The Derecho project code is taken from ``--account`` or ``$BATCH_ACCOUNT``; queue,
-walltime, threads, and modules are all overridable on the command line.
+The non-packed ``--scheduler pbs`` backend (one ``qsub`` per run) also works and
+likewise requires ``--env-file`` / ``$BATCH_ENV_FILE``.  The Derecho project code
+is taken from ``--account`` or ``$BATCH_ACCOUNT``; queue, walltime, threads, env
+file, python, and modules are all overridable on the command line.
 """
 
 from __future__ import annotations
@@ -372,6 +381,13 @@ def submit_packed_ensemble(args) -> None:
     figures.  The oversubscription check and the trailer print are project
     conveniences batch does not provide.
     """
+    # The packed wrapper `source`s this file on the compute node to set up
+    # modules + venv; an empty value would render `source ''` and fail obscurely.
+    if not args.env_file:
+        sys.exit("--env-file (or $BATCH_ENV_FILE) is required for packed "
+                 "submission; point it at your machine env_file "
+                 "(e.g. ~/.config/sci/activate.sh).")
+
     if args.max_workers * args.omp_num_threads > args.node_cpus:
         logging.warning(
             "max-workers(%d) * omp-num-threads(%d) = %d exceeds node-cpus(%d); "
@@ -387,7 +403,7 @@ def submit_packed_ensemble(args) -> None:
 
     def inner(shard_i: int, n_shards: int) -> list[str]:
         cmd = [
-            sys.executable, str(here),
+            args.python, str(here),
             "--scheduler", "local",
             "--shard", f"{shard_i}/{n_shards}",
             "--max-workers", str(args.max_workers),
@@ -417,6 +433,8 @@ def submit_packed_ensemble(args) -> None:
         resources,
         scheduler,
         script_dir,
+        env_file=args.env_file,
+        python=args.python,
         dry_run=args.setup_only,
         name_prefix="etc_pack",
         workdir=here.parent,
