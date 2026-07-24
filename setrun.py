@@ -409,7 +409,7 @@ def setgeo(rundata):
     topo_dir = Path(os.environ["DATA_PATH"]) / "topography"
     # topo_data.topofiles.append([3, os.path.join(topo_dir, 'atlantic_1min.tt3')])
     # topo_data.topofiles.append([3, os.path.join(topo_dir, 'newyork_3s.tt3')])
-    topo_data.topofiles.append([4, topo_dir / "GEBCO" / "GEBCO_2023.nc"])
+    topo_data.topofiles.append([4, topo_dir / "GEBCO" / "GEBCO_2025.nc"])
     # ncei_base_path = os.path.join(topo_dir, "ny_area", "ncei19_ny")
     ncei_base_path = topo_dir / "coastal_atlantic_9th_second"
 
