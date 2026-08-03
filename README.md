@@ -51,6 +51,7 @@ Output lands under `$SHARED_RUNS_PATH/sensitivity/<run-label>/`:
 
 - `peak_surge_table.csv` — tidy table, one row per (storm, gauge, member)
 - `sensitivity_summary.csv` — per (storm, gauge, parameter) statistics
+- `sea_level_superposition.csv` — the additivity check below
 - `<storm>/` — the figures below
 
 ### Metrics (all in `sensitivity_summary.csv`)
@@ -82,6 +83,43 @@ Output lands under `$SHARED_RUNS_PATH/sensitivity/<run-label>/`:
 - **Gauge maps, one per parameter** — the gauges drawn at their lon/lat, colored
   by standardized sensitivity (latitude-corrected aspect; non-significant gauges
   ringed).  Positions only — no coastline (cartopy is not a dependency).
+- **Sea-level superposition check, one per storm** — see below.
+
+### Sea-level superposition check
+
+ESA gives a single averaged slope; the superposition check
+(`ensemble_sensitivity.superposition_check`) answers the sharper question *"can
+we drop sea level from the ensemble and add it back linearly?"*.  For every pair
+of members that differ **only** in sea level (0.0 vs 0.2 m), holding wind,
+translation, and resolution fixed, it computes the peak-surge difference
+`Δ = J(0.2) − J(0.0)` and the effective gain `Δ / 0.2`.  It tests two things:
+
+- **separability / no interaction** — if `Δ` barely changes as the *other*
+  parameters vary (small spread), the sea-level effect is an additive offset
+  independent of them;
+- **gain** — `gain ≈ 1` means peak surge simply tracks the raised baseline ~1:1;
+  the deviation from 1 is the physical amplification/damping.
+
+The `superposition_<param>_<storm>.png` figure shows, per gauge, the individual
+matched-pair `Δ` dots (their scatter = the interaction), the per-gauge mean, and
+a dashed reference line at `Δ = 0.2` (pure 1:1 offset).
+
+**What the current runs show (0.0 → 0.2 m).** Across all 441 matched pairs the
+mean `Δ = 0.198 m` (gain **0.99**), with a within-gauge spread of only
+**0.4–4 %** of the 0.2 m offset — i.e. the sea-level effect is a **near-perfect
+additive offset with negligible interaction**, and surge passes through very
+nearly 1:1 (a slight ≤3.5 % damping in deeper water).  **Conclusion:** over
+`[0, 0.2]` sea level can be dropped from the sweep and re-applied post hoc as
+`peak(SL) ≈ peak(0) + gain·SL` (flat `gain = 1.0`, or the per-gauge gain in
+`sea_level_superposition.csv` for the small damping).  Doing so halves the
+factorial and frees that budget for the track shifts.
+
+**Caveat — this does *not* certify linearity.** Only two sea-level values were
+run, and two points define a straight line by construction, so curvature at
+intermediate values (e.g. 0.1 m) is unobservable here.  The additivity is
+verified; strict linearity is a physical argument, not a measurement.  To
+certify it, add one intermediate sea-level value to a small sub-sweep and check
+`Δ(0→0.1) ≈ Δ(0.1→0.2)`.
 
 ### Caveats to keep in mind (see also the module docstring)
 

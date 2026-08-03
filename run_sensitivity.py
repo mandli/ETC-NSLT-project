@@ -73,6 +73,34 @@ def write_summary_csv(results: dict, path: Path,
                     })
 
 
+def write_superposition_csv(check: dict, path: Path) -> None:
+    """Write the sea-level superposition/additivity check per (storm, gauge)."""
+    meta = check.get("_meta", {})
+    lo, hi = meta.get("lo"), meta.get("hi")
+    if lo is None:
+        return
+    offset = hi - lo
+    fields = ["storm", "gauge", "param", "lo", "hi", "n_pairs", "mean_delta",
+              "std_delta", "min_delta", "max_delta", "gain_mean",
+              "interaction_pct_of_offset"]
+    with path.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for storm, gauges in check.items():
+            if storm == "_meta":
+                continue
+            for gauge in sorted(gauges):
+                c = gauges[gauge]
+                writer.writerow({
+                    "storm": storm, "gauge": gauge, "param": meta["param"],
+                    "lo": lo, "hi": hi, "n_pairs": c["n"],
+                    "mean_delta": c["mean"], "std_delta": c["std"],
+                    "min_delta": c["min"], "max_delta": c["max"],
+                    "gain_mean": c["gain_mean"],
+                    "interaction_pct_of_offset": 100 * c["std"] / offset,
+                })
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -124,6 +152,8 @@ def main() -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     write_table_csv(table, out_root / "peak_surge_table.csv")
     write_summary_csv(results, out_root / "sensitivity_summary.csv")
+    write_superposition_csv(es.superposition_check(table, param="sea_level"),
+                            out_root / "sea_level_superposition.csv")
     es.plot_all(results, table, out_root)
 
     logger.info("Wrote CSVs + figures under %s", out_root)

@@ -102,6 +102,26 @@ def test_bootstrap_ci_contains_truth_under_noise():
         assert lo <= expected <= hi, f"{k}: {expected} not in CI ({lo}, {hi})"
 
 
+def test_superposition_exact_offset_when_additive():
+    """A purely additive model gives constant delta == C*(hi-lo), zero interaction."""
+    t = _make_table()  # peak is exactly linear & separable in sea_level (coeff C)
+    chk = es.superposition_check(t, param="sea_level")
+    lo, hi = chk["_meta"]["lo"], chk["_meta"]["hi"]
+    cell = chk["TEST"][1]
+    assert np.isclose(cell["mean"], C * (hi - lo), atol=1e-9)
+    assert np.isclose(cell["gain_mean"], C, atol=1e-9)
+    assert np.isclose(cell["std"], 0.0, atol=1e-9)  # no interaction -> no spread
+
+
+def test_superposition_detects_interaction():
+    """A sea_level*scaling cross term shows up as nonzero delta spread."""
+    t = _make_table()
+    for r in t.rows:  # inject interaction: extra 0.5*sea_level*scaling
+        r["peak_surge"] += 0.5 * r["sea_level"] * r["scaling"]
+    cell = es.superposition_check(t, param="sea_level")["TEST"][1]
+    assert cell["std"] > 1e-3  # separability broken -> detectable spread
+
+
 def test_prefix_roundtrip_against_etcjob():
     """parse_prefix inverts the real ETCJob.prefix for a spread of parameters.
 

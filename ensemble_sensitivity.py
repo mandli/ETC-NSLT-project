@@ -364,6 +364,72 @@ def compute_all(table: Table,
     return results
 
 
+def superposition_check(table: Table, param: str = "sea_level",
+                        match_keys: list[str] | None = None) -> dict:
+    """Test whether ``param``'s effect on peak surge is a separable offset.
+
+    ESA gives a single averaged slope; this instead asks the sharper question
+    behind "can we drop this parameter and add it back linearly?".  It pairs
+    ensemble members that differ *only* in ``param`` between its lowest and
+    highest swept values (holding ``match_keys`` fixed) and reports, per
+    (storm, gauge), the response difference ``delta = J(hi) - J(lo)`` and the
+    effective gain ``delta / (hi - lo)``.
+
+    Two things are being verified at once:
+
+    * **separability / no interaction** -- if ``delta`` is nearly constant as
+      the *other* parameters vary (small ``std``), the effect is an additive
+      offset independent of them, so it can be applied post hoc;
+    * **gain** -- ``gain_mean`` near 1 means the peak simply tracks the raised
+      baseline ~1:1 (deviation from 1 is the physical amplification/damping).
+
+    This does NOT test linearity *within* ``[lo, hi]``: two swept values define
+    a straight line by construction, so curvature at intermediate values is
+    unobservable here and needs an extra sweep point to certify.
+
+    Returns ``result[storm][gauge] = {n, mean, std, min, max, gain_mean,
+    deltas}`` plus ``result["_meta"] = {param, lo, hi, match_keys}``.
+    """
+    if match_keys is None:
+        match_keys = [k for k, _ in PARAMS if k != param] + ["levels"]
+
+    vals = sorted({r[param] for r in table.rows})
+    if len(vals) < 2:
+        logger.warning("superposition_check: %s has <2 values; skipping.", param)
+        return {"_meta": {"param": param, "lo": None, "hi": None,
+                          "match_keys": match_keys}}
+    lo, hi = vals[0], vals[-1]
+    if len(vals) > 2:
+        logger.info("superposition_check: %s has %d values; pairing extremes "
+                    "%.3g and %.3g only.", param, len(vals), lo, hi)
+
+    result: dict = {"_meta": {"param": param, "lo": lo, "hi": hi,
+                              "match_keys": match_keys}}
+    storms = table.storms
+    for storm in storms:
+        gauges = sorted({r["gauge"] for r in table.rows if r["storm"] == storm})
+        result[storm] = {}
+        for gauge in gauges:
+            rows = table.select(storm, gauge)
+            # group by the fixed keys, collect {param_value: peak}
+            groups: dict[tuple, dict] = {}
+            for r in rows:
+                mkey = tuple(r[k] for k in match_keys)
+                groups.setdefault(mkey, {})[r[param]] = r["peak_surge"]
+            deltas = [g[hi] - g[lo] for g in groups.values()
+                      if lo in g and hi in g]
+            if not deltas:
+                continue
+            d = np.array(deltas, dtype=float)
+            result[storm][gauge] = {
+                "n": int(d.size), "mean": float(d.mean()),
+                "std": float(d.std()), "min": float(d.min()),
+                "max": float(d.max()), "gain_mean": float(d.mean() / (hi - lo)),
+                "deltas": d,
+            }
+    return result
+
+
 # ----------------------------------------------------------------------------
 # Plotting
 # ----------------------------------------------------------------------------
@@ -647,9 +713,69 @@ def plot_gauge_maps(results: dict, table: Table, storm: str, out_dir: Path,
     return outs
 
 
+def plot_superposition(check: dict, storm: str, out_dir: Path,
+                       seed: int = 0) -> Path | None:
+    """Plot the superposition/additivity check for one storm.
+
+    One figure per storm: gauges on the y-axis, the per-pair response
+    difference ``delta = J(hi) - J(lo)`` on the x-axis.  Individual matched
+    pairs are drawn as jittered dots (their scatter within a gauge = the
+    interaction with the other parameters), with the per-gauge mean marked.  A
+    dashed reference line at ``delta = hi - lo`` marks a pure 1:1 additive
+    offset, so distance from it is the physical gain and tightness around it is
+    the separability.
+    """
+    meta = check.get("_meta", {})
+    lo, hi = meta.get("lo"), meta.get("hi")
+    if lo is None or storm not in check or not check[storm]:
+        return None
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    param = meta["param"]
+    offset = hi - lo
+    color = _PARAM_COLORS.get(param, "0.4")
+    gauges = sorted(check[storm].keys())
+    rng = np.random.default_rng(seed)
+
+    fig, ax = plt.subplots(figsize=(6.5, 0.5 * len(gauges) + 1.8))
+    for i, g in enumerate(gauges):
+        c = check[storm][g]
+        d = c["deltas"]
+        jit = rng.uniform(-0.14, 0.14, size=d.size)
+        ax.scatter(d, np.full(d.size, i) + jit, s=12, color=color,
+                   alpha=0.35, edgecolor="none", zorder=2)
+        ax.scatter(c["mean"], i, marker="|", s=400, color="0.1",
+                   linewidths=1.6, zorder=4)
+        ax.annotate(f"gain={c['gain_mean']:.3f}\n±{c['std']/offset*100:.1f}%",
+                    (c["mean"], i), textcoords="offset points", xytext=(8, 0),
+                    va="center", fontsize=7)
+    ax.axvline(offset, color="0.3", linestyle="--", linewidth=1.2, zorder=1,
+               label=f"pure 1:1 offset (Δ={offset:g})")
+    ax.set_yticks(range(len(gauges)))
+    ax.set_yticklabels([_gauge_label(g) for g in gauges], fontsize=8)
+    ax.set_xlabel(f"Δ peak surge for {param}: {lo:g}→{hi:g}  (m)", fontsize=9)
+    ax.grid(axis="x", color="0.9", linewidth=0.6)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    ax.legend(fontsize=7, loc="lower right")
+    ax.set_title(f"Superposition check: {param} additivity — {storm}\n"
+                 "dots = matched pairs (scatter = interaction); "
+                 "line = per-gauge mean", fontsize=9)
+    fig.tight_layout()
+    out = out_dir / f"superposition_{param}_{storm}.png"
+    fig.savefig(out, dpi=300)
+    plt.close(fig)
+    return out
+
+
 def plot_all(results: dict, table: Table, out_root: Path,
              params: list[tuple[str, str]] = PARAMS) -> None:
     """Write all figures under ``out_root/<storm>/`` for every storm."""
+    sea_check = superposition_check(table, param="sea_level")
     for storm in results:
         out_dir = out_root / storm
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -657,4 +783,5 @@ def plot_all(results: dict, table: Table, out_root: Path,
         plot_tornado(results, storm, out_dir, params)
         plot_regression_diagnostics(results, table, storm, out_dir, params)
         plot_gauge_maps(results, table, storm, out_dir, params)
+        plot_superposition(sea_check, storm, out_dir)
         logger.info("Wrote sensitivity figures for %s to %s", storm, out_dir)
