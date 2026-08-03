@@ -1,15 +1,14 @@
 """Plot functions for comparing gauges across runs"""
 
-from pathlib import Path
 import datetime
+from pathlib import Path
 
+from batch import JobResult
 import matplotlib.pyplot as plt
 import numpy as np
 
-from batch import JobResult
-
-from clawpack.pyclaw import gauges
 import clawpack.geoclaw.util as geoutil
+from clawpack.pyclaw import gauges
 
 gauge_mapping = {1: ('8518750', 'The Battery, NY'),
                  2: ('8516945', 'Kings Point, NY'),
@@ -36,6 +35,30 @@ times = {"DEC1992": [np.datetime64("1992-12-08T00:00:00.00"),
                         datetime.datetime(2018, 11, 18, 0, 0),
                         [0, 4]]}
 
+def load_gauge_surface(gauge_id, output_path, dry_tolerance=1e-16):
+    """Load a single gauge's surface-elevation time series from a run directory.
+
+    Reads ``gauge<gauge_id>.txt`` from ``output_path`` via clawpack's
+    ``GaugeSolution`` and returns ``(time_days, surface)`` where ``surface`` is
+    the sea-surface elevation ``eta`` (``q[3]``) masked to NaN-safe values
+    wherever the water depth ``h`` (``q[0]``) falls below ``dry_tolerance``.
+
+    This is the single definition of "surface" shared by the comparison plots
+    and the ensemble-sensitivity analysis so both agree on what is plotted vs.
+    what a peak surge is computed from.
+    """
+    gauge = gauges.GaugeSolution(gauge_id, output_path)
+    time = gauge.t / (24 * 60**2)  # days
+    surface = np.ma.masked_where(np.abs(gauge.q[0, :]) < dry_tolerance,
+                                 gauge.q[3, :])
+    return time, surface
+
+
+def load_gauge_location(gauge_id, output_path):
+    """Return a gauge's ``(lon, lat)`` from its header in ``output_path``."""
+    return gauges.GaugeSolution(gauge_id, output_path).location
+
+
 def plot_surface(ax, gauge_id, output_path, style, label=None, n_markers=15,
                  dry_tolerance=1e-16, alpha=1.0):
     """Fetch and plot surface data for a single run.
@@ -48,10 +71,7 @@ def plot_surface(ax, gauge_id, output_path, style, label=None, n_markers=15,
     """
     print(f"Loading data from: {output_path}")
 
-    gauge = gauges.GaugeSolution(gauge_id, output_path)
-    time = gauge.t / (24 * 60**2)  # days
-    surface = np.ma.masked_where(np.abs(gauge.q[0, :]) < dry_tolerance,
-                                 gauge.q[3, :])
+    time, surface = load_gauge_surface(gauge_id, output_path, dry_tolerance)
 
     plot_style = dict(style)
     if alpha < 0.5:
@@ -115,7 +135,7 @@ def plot_observed(ax, gauge_number, times):
                                                                 begin_date,
                                                                 end_date,
                                                                 verbose=False)
-    
+
     if water_level is None:
         print("*** Could not fetch gauge {}.".format(station_id))
     else:
