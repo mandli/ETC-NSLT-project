@@ -67,24 +67,29 @@ file, python, and modules are all overridable on the command line.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass, field
 import itertools
 import logging
 import os
+from pathlib import Path
 import socket
 import sys
-from dataclasses import dataclass, field
-from pathlib import Path
 
-import numpy as np
-
-from batch import Job, JobResult, JobPaths
-from batch import add_execution_args, execute, submit_packed, PackedResources
-from batch import plot_performance
+from batch import (
+    Job,
+    JobPaths,
+    JobResult,
+    PackedResources,
+    add_execution_args,
+    execute,
+    plot_performance,
+    submit_packed,
+)
 from batch.plot import plot_job
+import numpy as np
 
 import clawpack.clawutil.util as clawutil
 from clawpack.geoclaw.surge.storm import Storm
-
 import gauge_comparison as gc
 
 logging.basicConfig(
@@ -103,15 +108,22 @@ class ETCJob(Job):
             scaling: float = 1.0,
             levels: int = 2,
             time_dilation: float = 1.0,
+            track_shift_lon: float = 0.0,
+            track_shift_lat: float = 0.0,
             ) -> None:
 
         super().__init__()
 
+        # Track shift is encoded as a signed suffix; the ensemble-sensitivity
+        # parser (ensemble_sensitivity._PREFIX_RE) treats it as optional so this
+        # stays backward-compatible with older, pre-track job directories.
         self.prefix = (f"storm{storm_path.stem}_" +
                        f"sea{sea_level:.1f}_" +
                        f"scale{scaling:.2f}_" +
                        f"lev{levels}_" +
-                       f"dil{time_dilation:.2f}")
+                       f"dil{time_dilation:.2f}_" +
+                       f"tlat{track_shift_lat:+.2f}_" +
+                       f"tlon{track_shift_lon:+.2f}")
         self.executable = "xgeoclaw"
         # Absolute setplot path so the PBS script's compute-node plotclaw call
         # (and post_run for local runs) resolves correctly regardless of cwd.
@@ -121,6 +133,8 @@ class ETCJob(Job):
         self.scaling = scaling
         self.sea_level = sea_level
         self.time_dilation = time_dilation
+        self.track_shift_lon = track_shift_lon
+        self.track_shift_lat = track_shift_lat
         self.levels = levels
         # Per-run plotting (post_run) is on by default; --no-run-plots clears it.
         self.plot_per_run = True
@@ -150,6 +164,12 @@ class ETCJob(Job):
         # crop_extent = [lon0, lon1, lat0, lat1]
         etc_storm.crop_extent = [-80, -62.5, 27.5, 45]
         etc_storm.storm_time_scale = self.time_dilation
+        # Rigid registration shift of the gridded forcing, applied in GeoClaw's
+        # Fortran as ``domain = file + shift`` before the (fixed) crop, i.e. the
+        # storm field translates across the fixed crop window.  +x_shift = East,
+        # +y_shift = North.  crop_extent is intentionally left unshifted.
+        etc_storm.x_shift = self.track_shift_lon
+        etc_storm.y_shift = self.track_shift_lat
 
         self.rundata.surge_data.storm_file = path / f"{self.prefix}.storm"
         etc_storm.write(self.rundata.surge_data.storm_file,
@@ -168,7 +188,9 @@ class ETCJob(Job):
                 f"sea_level={self.rundata.geo_data.sea_level}, "
                 f"scaling={self.scaling}, "
                 f"levels={self.rundata.amrdata.amr_levels_max}, "
-                f"time_dilation={self.time_dilation})")
+                f"time_dilation={self.time_dilation}, "
+                f"track_shift=({self.track_shift_lon:+.2f}, "
+                f"{self.track_shift_lat:+.2f}))")
 
     def __str__(self) -> str:
         return f"{self.prefix}"
@@ -238,6 +260,7 @@ def build_run_groups(
     scalings: list[float],
     amr_max_levels: list[int],
     time_dilations: list[float],
+    track_shifts: list[tuple[float, float]],
 ) -> tuple[list["ETCJob"], list[RunGroup]]:
     """Build all jobs and group them by storm for gauge comparison.
 
@@ -253,9 +276,11 @@ def build_run_groups(
     groups: dict[str, RunGroup] = {sd: RunGroup(sd) for sd in storm_dates}
 
     for storm_date in storm_dates:
-        for sea_level, amr_max_level, scaling, time_dilation, res in itertools.product(
+        for (sea_level, amr_max_level, scaling, time_dilation, res,
+             track) in itertools.product(
                 sea_levels, amr_max_levels, scalings, time_dilations,
-                resolutions.get(storm_date, [])):
+                resolutions.get(storm_date, []), track_shifts):
+            track_lon, track_lat = track
             storm_file = storms_path / f"{storm_date}_{res}.nc"
             if not storm_file.exists():
                 logging.warning("Storm file not found, skipping: %s", storm_file)
@@ -264,7 +289,9 @@ def build_run_groups(
                          sea_level=sea_level,
                          scaling=scaling,
                          levels=amr_max_level,
-                         time_dilation=time_dilation)
+                         time_dilation=time_dilation,
+                         track_shift_lon=track_lon,
+                         track_shift_lat=track_lat)
             all_jobs.append(job)
             groups[storm_date].jobs.append(job)
 
@@ -500,10 +527,19 @@ def main() -> None:
         "DEC2012": ["0pt25", "1pt00", "1pt50"],
         "NOV2018": ["0pt25", "1pt00", "1pt50"],
     }
-    sea_levels = [0.0, 0.2]
+    # Sea level dropped from the sweep: the ensemble-sensitivity superposition
+    # check showed peak surge responds to it as a separable ~1:1 additive offset
+    # over [0, 0.2] m, so it is applied post hoc rather than swept.  The freed
+    # factorial budget goes to the track shifts below.
+    sea_levels = [0.0]
     scalings = [0.8, 1.0, 1.2]
     amr_max_levels = [5]
     time_dilations = [0.8, 1.0, 1.2]
+    # Track shifts as a 5-point cardinal star (lon, lat) in degrees: center +
+    # N/S/E/W at 0.5 deg.  Crossed with the other axes this keeps track_lon and
+    # track_lat mutually orthogonal (their product is always zero) and orthogonal
+    # to the other parameters, so the univariate ESA slopes stay clean.
+    track_shifts = [(0.0, 0.0), (0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5)]
 
     jobs, groups = build_run_groups(
         args.storms_path.resolve(),
@@ -513,6 +549,7 @@ def main() -> None:
         scalings,
         amr_max_levels,
         time_dilations,
+        track_shifts,
     )
 
     for job in jobs:

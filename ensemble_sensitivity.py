@@ -63,8 +63,13 @@ PARAMS: list[tuple[str, str]] = [
     ("scaling", "Wind strength"),
     ("dilation", "Translation (dilation)"),
     ("res", "Resolution (deg)"),
-    ("sea_level", "Sea level"),
+    ("track_lon", "Track E/W"),
+    ("track_lat", "Track N/S"),
 ]
+# ``sea_level`` is intentionally NOT in PARAMS: it was shown to be a separable
+# ~1:1 additive offset (see ``superposition_check``) and is applied post hoc, so
+# the sweep no longer varies it.  The column is retained in COLUMNS for the
+# superposition diagnostic and for older ensembles that did vary it.
 
 # Table columns, in order.  ``track_lat``/``track_lon`` are reserved for the
 # future track-shift sweep so downstream code needs no structural change.
@@ -74,14 +79,19 @@ COLUMNS: list[str] = [
 ]
 
 # Inverse of ETCJob.prefix:
-#   storm<DATE>_<RES>_sea<SEA>_scale<SCALE>_lev<LEV>_dil<DIL>
+#   storm<DATE>_<RES>_sea<SEA>_scale<SCALE>_lev<LEV>_dil<DIL>[_tlat<LAT>_tlon<LON>]
 # e.g. stormDEC1992_0pt25_sea0.0_scale0.80_lev5_dil0.80
+#      stormDEC2012_1pt00_sea0.0_scale1.20_lev5_dil0.80_tlat+0.50_tlon-0.50
+# The track-shift suffix is optional so older (pre-track) job dirs still parse,
+# defaulting their track shift to zero.
 _PREFIX_RE = re.compile(
     r"^storm(?P<storm>[A-Z]+\d+)_(?P<res>[0-9pt]+)"
     r"_sea(?P<sea_level>-?\d+(?:\.\d+)?)"
     r"_scale(?P<scaling>-?\d+(?:\.\d+)?)"
     r"_lev(?P<levels>\d+)"
-    r"_dil(?P<dilation>-?\d+(?:\.\d+)?)$"
+    r"_dil(?P<dilation>-?\d+(?:\.\d+)?)"
+    r"(?:_tlat(?P<track_lat>[-+]?\d+(?:\.\d+)?)"
+    r"_tlon(?P<track_lon>[-+]?\d+(?:\.\d+)?))?$"
 )
 
 
@@ -115,6 +125,9 @@ def parse_prefix(name: str) -> dict | None:
         "scaling": float(g["scaling"]),
         "levels": int(g["levels"]),
         "dilation": float(g["dilation"]),
+        # Track shift defaults to zero for older prefixes without the suffix.
+        "track_lat": float(g["track_lat"]) if g["track_lat"] else 0.0,
+        "track_lon": float(g["track_lon"]) if g["track_lon"] else 0.0,
     }
 
 
@@ -228,8 +241,8 @@ def build_table(run_root: Path,
                 "scaling": params["scaling"],
                 "dilation": params["dilation"],
                 "levels": float(params["levels"]),
-                "track_lat": 0.0,
-                "track_lon": 0.0,
+                "track_lat": params["track_lat"],
+                "track_lon": params["track_lon"],
                 "peak_surge": peak,
             })
 
@@ -446,6 +459,16 @@ _PARAM_COLORS = {
     "track_lat": "#D55E00",  # vermillion   (reserved for future track sweep)
     "track_lon": "#56B4E9",  # sky blue
 }
+
+# Fixed gauge hues for the grouped bar chart (Okabe-Ito, colorblind-safe, one
+# per gauge, never cycled).  Gauge 4 (Bridgeport) is dry and never plotted.
+_GAUGE_COLORS = {
+    1: "#E69F00", 2: "#56B4E9", 3: "#009E73", 4: "#F0E442",
+    5: "#0072B2", 6: "#D55E00", 7: "#CC79A7", 8: "#000000",
+}
+
+# Fixed storm hues for the cross-storm comparison figure.
+_STORM_COLORS = {"DEC1992": "#0072B2", "DEC2012": "#D55E00", "NOV2018": "#009E73"}
 
 
 def _gauge_label(gauge: int) -> str:
@@ -690,8 +713,16 @@ def plot_gauge_maps(results: dict, table: Table, storm: str, out_dir: Path,
                            edgecolors="0.5", linestyle=":", linewidths=1.2,
                            zorder=4)
         for g, lon, lat in zip(gauges, lons, lats):
+            # Labels offset up-and-left to clear the markers; gauge 8 (Atlantic
+            # City) sits in the lower-left corner where a left label runs off
+            # the axis, so send its label to the upper-right instead.
+            if g == 8:
+                xytext, ha = (9, 7), "left"
+            else:
+                xytext, ha = (-9, 7), "right"
             ax.annotate(f"{g}: {gc.gauge_mapping[g][1]}", (lon, lat),
-                        textcoords="offset points", xytext=(6, 4), fontsize=7)
+                        textcoords="offset points", xytext=xytext, ha=ha,
+                        va="bottom", fontsize=7)
 
         mean_lat = float(np.mean(lats))
         ax.set_aspect(1.0 / np.cos(np.deg2rad(mean_lat)))
@@ -772,6 +803,139 @@ def plot_superposition(check: dict, storm: str, out_dir: Path,
     return out
 
 
+def _std_ci(s: dict) -> tuple[float, float]:
+    """Bootstrap CI on the *standardized* sensitivity (scale slope CI by sigma_x)."""
+    sx = s["sigma_x"]
+    return s["ci"][0] * sx, s["ci"][1] * sx
+
+
+def plot_grouped_bars(results: dict, storm: str, out_dir: Path,
+                      params: list[tuple[str, str]] = PARAMS) -> Path:
+    """All-gauges grouped bar chart for one storm, clustered by parameter.
+
+    One cluster per parameter, one bar per gauge within it (colored by gauge
+    from a fixed colorblind-safe palette), with bootstrap-CI error bars.  Bars
+    failing the significance test are muted.  Complements the per-gauge tornado
+    (which is magnitude-sorted per gauge) by making a *single* parameter
+    directly comparable across gauges.  Undefined cells (a constant parameter,
+    e.g. single-resolution DEC1992) simply omit their bar.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    keys = [k for k, _ in params]
+    labels = [lab for _, lab in params]
+    gauges = sorted(results[storm].keys())
+    n_g = len(gauges)
+    width = 0.8 / n_g
+
+    fig, ax = plt.subplots(figsize=(1.8 + 1.4 * len(keys), 4.5))
+    for gi, g in enumerate(gauges):
+        uni = results[storm][g]["univariate"]
+        xs, ys, elo, ehi, alphas = [], [], [], [], []
+        for j, k in enumerate(keys):
+            s = uni[k]
+            if not s["defined"]:
+                continue
+            v = s["standardized"]
+            lo, hi = _std_ci(s)
+            xs.append(j + (gi - (n_g - 1) / 2) * width)
+            ys.append(v)
+            elo.append(abs(v - lo))
+            ehi.append(abs(hi - v))
+            alphas.append(1.0 if s["p"] < _ALPHA else 0.35)
+        if not xs:
+            continue
+        color = _GAUGE_COLORS.get(g, "0.5")
+        # bar alpha must be per-bar; draw individually to vary muting
+        for x, y, el, eh, a in zip(xs, ys, elo, ehi, alphas):
+            ax.bar(x, y, width=width, color=color, alpha=a, zorder=2)
+            ax.errorbar(x, y, yerr=[[el], [eh]], fmt="none", ecolor="0.3",
+                        elinewidth=0.8, capsize=2, zorder=3)
+        ax.bar(np.nan, np.nan, color=color, label=_gauge_label(g))  # legend proxy
+
+    ax.axhline(0.0, color="0.3", linewidth=1.0, zorder=1)
+    ax.set_xticks(range(len(keys)))
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_ylabel("Standardized sensitivity\n(m surge per 1$\\sigma$)", fontsize=9)
+    ax.grid(axis="y", color="0.9", linewidth=0.6, zorder=0)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    ax.legend(fontsize=7, ncol=2, loc="best", framealpha=0.9)
+    ax.set_title(f"Peak-surge sensitivity by gauge — {storm}\n"
+                 f"(muted bars: not significant at p<{_ALPHA})", fontsize=10)
+    fig.tight_layout()
+    out = out_dir / f"grouped_sensitivity_{storm}.png"
+    fig.savefig(out, dpi=300)
+    plt.close(fig)
+    return out
+
+
+def plot_storm_comparison(results: dict, out_root: Path,
+                          params: list[tuple[str, str]] = PARAMS) -> list[Path]:
+    """Cross-storm comparison, one figure per parameter, at ``out_root``.
+
+    For each parameter: x = gauge, one marker-and-error-bar series per storm,
+    y = standardized sensitivity.  This is the *robustness* view -- do the
+    storms agree on the sign and rank of a parameter's effect across gauges? --
+    and deliberately NOT a pooled regression, which would conflate storms'
+    different dynamical regimes and absolute surge magnitudes.  A storm missing
+    a parameter (e.g. single-resolution DEC1992 for resolution) is simply absent
+    from that panel.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    storms = list(results.keys())
+    all_gauges = sorted({g for s in storms for g in results[s]})
+    gpos = {g: i for i, g in enumerate(all_gauges)}
+    outs = []
+    for key, label in params:
+        fig, ax = plt.subplots(figsize=(1.2 + 0.7 * len(all_gauges), 4.2))
+        drawn = False
+        for si, storm in enumerate(storms):
+            xs, ys, elo, ehi = [], [], [], []
+            for g in results[storm]:
+                s = results[storm][g]["univariate"][key]
+                if not s["defined"]:
+                    continue
+                v = s["standardized"]
+                lo, hi = _std_ci(s)
+                # small horizontal dodge per storm so error bars don't overlap
+                xs.append(gpos[g] + (si - (len(storms) - 1) / 2) * 0.12)
+                ys.append(v)
+                elo.append(abs(v - lo))
+                ehi.append(abs(hi - v))
+            if not xs:
+                continue
+            drawn = True
+            ax.errorbar(xs, ys, yerr=[elo, ehi], fmt="o", markersize=5,
+                        color=_STORM_COLORS.get(storm, "0.4"), label=storm,
+                        elinewidth=1.0, capsize=2, linestyle="none")
+        ax.axhline(0.0, color="0.3", linewidth=1.0, zorder=1)
+        ax.set_xticks(range(len(all_gauges)))
+        ax.set_xticklabels([_gauge_label(g) for g in all_gauges],
+                           rotation=30, ha="right", fontsize=7)
+        ax.set_ylabel("Standardized sensitivity\n(m surge per 1$\\sigma$)",
+                      fontsize=9)
+        ax.grid(axis="y", color="0.9", linewidth=0.6)
+        ax.set_axisbelow(True)
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
+        if drawn:
+            ax.legend(fontsize=8, loc="best")
+        ax.set_title(f"Cross-storm sensitivity to {label}", fontsize=10)
+        fig.tight_layout()
+        out = out_root / f"comparison_{key}.png"
+        fig.savefig(out, dpi=300)
+        plt.close(fig)
+        outs.append(out)
+    return outs
+
+
 def plot_all(results: dict, table: Table, out_root: Path,
              params: list[tuple[str, str]] = PARAMS) -> None:
     """Write all figures under ``out_root/<storm>/`` for every storm."""
@@ -783,5 +947,8 @@ def plot_all(results: dict, table: Table, out_root: Path,
         plot_tornado(results, storm, out_dir, params)
         plot_regression_diagnostics(results, table, storm, out_dir, params)
         plot_gauge_maps(results, table, storm, out_dir, params)
+        plot_grouped_bars(results, storm, out_dir, params)
         plot_superposition(sea_check, storm, out_dir)
         logger.info("Wrote sensitivity figures for %s to %s", storm, out_dir)
+    # Cross-storm comparison spans all storms; emit once at the root.
+    plot_storm_comparison(results, out_root, params)

@@ -6,16 +6,28 @@ Sea-Level Change Team (N-SLCT) project.
 ## Ensemble runs — `run_tests.py`
 
 `run_tests.py` drives a storm-surge ensemble through the `batch` package.  It
-sweeps a **balanced full factorial** over four parameters for each storm and
-writes one output directory per ensemble member under
-`$OUTPUT_PATH/ETC_NASA_SLCT/`:
+sweeps a **balanced factorial** over these parameters for each storm and writes
+one output directory per ensemble member under `$OUTPUT_PATH/ETC_NASA_SLCT/`:
 
-| Parameter        | Sweep field     | Values                | Meaning                         |
-|------------------|-----------------|-----------------------|---------------------------------|
-| wind strength    | `scaling`       | 0.8, 1.0, 1.2         | storm wind/forcing multiplier   |
-| translation      | `time_dilation` | 0.8, 1.0, 1.2         | storm-evolution time-scaling    |
-| resolution       | forcing res     | `0pt25`/`1pt00`/`1pt50` | forcing grid spacing (deg)    |
-| sea level        | `sea_level`     | 0.0, 0.2              | background sea-level offset (m) |
+| Parameter        | Sweep field                        | Values                              | Meaning                              |
+|------------------|------------------------------------|-------------------------------------|--------------------------------------|
+| wind strength    | `scaling`                          | 0.8, 1.0, 1.2                       | storm wind/forcing multiplier        |
+| translation      | `time_dilation`                    | 0.8, 1.0, 1.2                       | storm-evolution time-scaling         |
+| resolution       | forcing res                        | `0pt25`/`1pt00`/`1pt50`             | forcing grid spacing (deg)           |
+| track shift      | `track_shift_lon`/`track_shift_lat` | cardinal star `{0, ±0.5°}`          | rigid N/S/E/W shift of the storm field |
+
+The track shift is a 5-point cardinal star — center + N/S/E/W at 0.5° — applied
+via GeoClaw's gridded-forcing registration shift (`x_shift`/`y_shift`, `+x` East,
+`+y` North), which translates the storm field across the fixed crop window.
+Crossed with the other axes the star keeps `track_lon ⟂ track_lat` and both
+orthogonal to the other parameters, so the ESA slopes stay clean (≈315 runs
+total).
+
+**Sea level is no longer swept.** The ESA superposition check (below) showed peak
+surge responds to sea level as a separable ~1:1 additive offset over `[0, 0.2]`
+m, so it is fixed at 0.0 and re-applied post hoc rather than costing a factorial
+dimension.  Older ensembles that did sweep it still analyze correctly (the
+track-shift suffix in the job-directory name is optional to the parser).
 
 Storms: `DEC1992` (0.25° only), `DEC2012`, `NOV2018`.  Runs locally or on NCAR
 Derecho (PBS); see the module docstring for the full CLI and Derecho workflow.
@@ -33,10 +45,11 @@ parameter.  The sensitivity of a scalar response `J` (peak surge) to a parameter
 S = cov(J, x) / var(x) = dJ/dx
 ```
 
-Because the sweep is a *balanced full factorial* the parameters are mutually
-orthogonal, so each univariate slope equals that parameter's main-effect
-coefficient — the classic ESA formula is well-posed on this design.  Storms and
-gauges are kept **separate** throughout.
+Because the sweep is a *balanced orthogonal design* (a full factorial in
+wind/dilation/resolution, crossed with the cardinal-star track shift), the
+parameters are mutually uncorrelated, so each univariate slope equals that
+parameter's main-effect coefficient — the classic ESA formula is well-posed on
+this design.  Storms and gauges are kept **separate** throughout.
 
 `run_sensitivity.py` is purely disk-driven (like `run_tests.py --plot-only`):
 run it once the ensemble has finished.
@@ -75,8 +88,15 @@ Output lands under `$SHARED_RUNS_PATH/sensitivity/<run-label>/`:
   one parameter's standardized sensitivity, sorted by magnitude (largest on top)
   and extending left/right from a central zero line.  Sorting by magnitude gives
   the chart its tapering "tornado" shape; it is the standard sensitivity-analysis
-  ranking plot.  Bootstrap-CI error bars are drawn on each bar, and bars whose
-  95% CI spans zero are muted (their sign is not resolved by the ensemble).
+  ranking plot, so **the parameter order deliberately changes from gauge to
+  gauge** — that is the convention, and cross-gauge comparison of a single
+  parameter is handled by the heatmap and grouped-bar figures instead.
+  Bootstrap-CI error bars are drawn on each bar, and bars whose 95% CI spans zero
+  are muted (their sign is not resolved by the ensemble).
+- **Grouped bar, one per storm** — all gauges on one axis, clustered by
+  parameter (one colored bar per gauge within each cluster), with CI error bars
+  and muted non-significant bars.  The fixed layout complements the tornado: it
+  makes a *single* parameter directly comparable across gauges.
 - **Regression-diagnostic grid** — peak surge vs. each parameter for every
   member, with the fitted ESA slope and R² per panel.  The *verification* view:
   it exposes nonlinearity or leverage a single slope would hide.
@@ -84,6 +104,16 @@ Output lands under `$SHARED_RUNS_PATH/sensitivity/<run-label>/`:
   by standardized sensitivity (latitude-corrected aspect; non-significant gauges
   ringed).  Positions only — no coastline (cartopy is not a dependency).
 - **Sea-level superposition check, one per storm** — see below.
+
+### Cross-storm comparison (`comparison_<param>.png`, at the run-label root)
+
+One figure per parameter overlays the three storms' standardized sensitivities
+across gauges (marker + CI per storm).  It answers the **robustness** question —
+do the storms agree on the sign and rank of a parameter's effect? — and is
+deliberately *not* a pooled regression: pooling raw peak surge across storms
+would conflate their different dynamical regimes and absolute surge magnitudes.
+Per-storm ESA remains the primary analysis.  A storm missing a parameter (e.g.
+single-resolution `DEC1992` for resolution) is simply absent from that panel.
 
 ### Sea-level superposition check
 
