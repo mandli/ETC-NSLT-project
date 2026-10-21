@@ -12,6 +12,7 @@ are grouped by forcing resolution::
 
     python plot_presentation.py                          # DEC2012, New Haven
     python plot_presentation.py --style lines
+    python plot_presentation.py --storms DEC2012 NOV2018 --gauges 1 2 5
     python plot_presentation.py --output-path $OUTPUT_PATH/ETC_NASA_SLCT_pike
 
 Only runs at ``--sea-level`` (default 0.0) are used, since the plotted surface
@@ -68,10 +69,14 @@ def main() -> None:
         "--output-path", type=Path,
         default=Path(os.environ["OUTPUT_PATH"]).expanduser() / "ETC_NASA_SLCT",
         help="Ensemble output root (default: $OUTPUT_PATH/ETC_NASA_SLCT).")
-    parser.add_argument("--storm", default="DEC2012", choices=sorted(gc.times))
-    parser.add_argument("--gauge", type=int, default=5,
+    parser.add_argument("--storm", "--storms", dest="storms", nargs="+",
+                        default=["DEC2012"], choices=sorted(gc.times),
+                        help="One or more storms (default: DEC2012).")
+    parser.add_argument("--gauge", "--gauges", dest="gauges", nargs="+",
+                        type=int, default=[5],
                         choices=sorted(gc.gauge_mapping),
-                        help="Gauge number (default: 5, New Haven, CT).")
+                        help="One or more gauge numbers "
+                             "(default: 5, New Haven, CT).")
     parser.add_argument("--style", default="envelope",
                         choices=["envelope", "lines"],
                         help="Min/max envelope + median, or thin lines.")
@@ -93,26 +98,37 @@ def main() -> None:
     if not run_root.is_dir():
         raise SystemExit(f"Output root not found: {run_root}")
 
-    runs = discover_runs(run_root, args.storm, args.gauge, args.sea_level)
-    if not runs:
-        raise SystemExit(f"No {args.storm} runs at sea level {args.sea_level} "
-                         f"under {run_root}")
-    counts = {}
-    for res, _ in runs:
-        counts[res] = counts.get(res, 0) + 1
-    logger.info("Using %d runs from %s: %s", len(runs), run_root,
-                ", ".join(f"{r:g} deg x{n}" for r, n in sorted(counts.items())))
-
     out_dir = args.out_dir
     if out_dir is None:
         out_dir = (Path(os.environ["SHARED_RUNS_PATH"]).expanduser().resolve()
                    / "gauge_comparisons" / args.run_label / "presentation")
 
-    written = gc.plot_presentation(runs, out_dir, storm_date=args.storm,
-                                   gauge_id=args.gauge, style=args.style,
-                                   baseline=not args.no_baseline)
-    for path in written:
-        logger.info("Wrote %s", path)
+    n_written = 0
+    for storm in args.storms:
+        for gauge in args.gauges:
+            runs = discover_runs(run_root, storm, gauge, args.sea_level)
+            if not runs:
+                logger.warning("No %s gauge %d runs at sea level %g under %s; "
+                               "skipping.", storm, gauge, args.sea_level,
+                               run_root)
+                continue
+            counts = {}
+            for res, _ in runs:
+                counts[res] = counts.get(res, 0) + 1
+            logger.info("%s gauge %d: %d runs (%s)", storm, gauge, len(runs),
+                        ", ".join(f"{r:g} deg x{n}"
+                                  for r, n in sorted(counts.items())))
+
+            written = gc.plot_presentation(runs, out_dir, storm_date=storm,
+                                           gauge_id=gauge, style=args.style,
+                                           baseline=not args.no_baseline)
+            for path in written:
+                logger.info("Wrote %s", path)
+            n_written += 1
+
+    if n_written == 0:
+        raise SystemExit(f"No figures written: no matching runs under "
+                         f"{run_root}")
 
 
 if __name__ == "__main__":
