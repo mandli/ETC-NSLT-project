@@ -85,6 +85,33 @@ def plot_surface(ax, gauge_id, output_path, style, label=None, n_markers=15,
     return time, surface
 
 
+def _stack_runs(run_data, n_points=500):
+    """Interpolate (time, surface) runs onto a common grid over their overlap.
+
+    Returns ``(t_common, stack)`` with ``stack`` of shape ``(n_runs, n_points)``.
+    Masked (dry) samples are dropped before interpolation and runs with fewer
+    than two valid samples are skipped, so ``stack`` may have fewer rows than
+    ``run_data`` -- or none, in which case ``t_common`` is ``None``.
+    """
+    if not run_data:
+        return None, np.empty((0, n_points))
+
+    t_min = max(t[0] for t, _ in run_data)
+    t_max = min(t[-1] for t, _ in run_data)
+    if t_min >= t_max:
+        return None, np.empty((0, n_points))
+    t_common = np.linspace(t_min, t_max, n_points)
+
+    interped = []
+    for t, s in run_data:
+        valid = ~np.ma.getmaskarray(s)
+        if valid.sum() < 2:
+            continue
+        interped.append(np.interp(t_common, t[valid], np.ma.getdata(s)[valid]))
+
+    return t_common, np.array(interped).reshape(len(interped), n_points)
+
+
 def plot_ensemble_band(ax, run_data, color="steelblue", n_points=500):
     """Overlay min/max envelope and mean over a list of (time, surface) pairs.
 
@@ -93,26 +120,10 @@ def plot_ensemble_band(ax, run_data, color="steelblue", n_points=500):
     separate low-alpha individual lines (drawn by the caller) carry clustering
     information that a pure envelope would hide.
     """
-    if not run_data:
+    t_common, stack = _stack_runs(run_data, n_points)
+    if len(stack) < 2:
         return
 
-    t_min = max(t[0] for t, _ in run_data)
-    t_max = min(t[-1] for t, _ in run_data)
-    if t_min >= t_max:
-        return
-    t_common = np.linspace(t_min, t_max, n_points)
-
-    interped = []
-    for t, s in run_data:
-        valid = ~np.ma.getmaskarray(s)
-        if valid.sum() < 2:
-            continue
-        interped.append(np.interp(t_common, t[valid], s.data[valid]))
-
-    if len(interped) < 2:
-        return
-
-    stack = np.array(interped)
     mean = np.mean(stack, axis=0)
     lo = np.min(stack, axis=0)
     hi = np.max(stack, axis=0)
@@ -122,8 +133,16 @@ def plot_ensemble_band(ax, run_data, color="steelblue", n_points=500):
     ax.plot(t_common, mean, color=color, linewidth=2.0, linestyle="--",
             label="ensemble mean")
 
-def plot_observed(ax, gauge_number, times):
-    """Fetch and plot observed NOAA tide-gauge data."""
+def fetch_observed(gauge_number, times):
+    """Fetch a NOAA gauge record and return its detided residual.
+
+    Returns ``(t_days, residual)`` with time in days relative to the storm's
+    landfall time, or ``None`` if the fetch failed.  Both the water level and
+    the tide predictions come from ``fetch_noaa_tide_data``'s defaults (station
+    datum ``STND``, metric, GMT), so the datum cancels in the subtraction.  No
+    baseline is removed: the residual still carries any non-tidal offset
+    (e.g. sea-level rise since the tidal epoch, monthly MSL anomaly).
+    """
     station_id, station_name = gauge_mapping[gauge_number]
 
     landfall_time = times[0]
@@ -138,19 +157,163 @@ def plot_observed(ax, gauge_number, times):
 
     if water_level is None:
         print("*** Could not fetch gauge {}.".format(station_id))
-    else:
-        # Convert to seconds relative to landfall
-        t = (date_time - landfall_time) / np.timedelta64(1, 's')
-        t /= (24 * 60**2)
+        return None
 
-        # Detide
-        water_level -= tide
+    # Convert to seconds relative to landfall
+    t = (date_time - landfall_time) / np.timedelta64(1, 's')
+    t /= (24 * 60**2)
 
+    # Detide
+    water_level -= tide
+    return t, water_level
+
+
+def plot_observed(ax, gauge_number, times):
+    """Fetch and plot observed NOAA tide-gauge data."""
+    observed = fetch_observed(gauge_number, times)
+    if observed is not None:
+        t, water_level = observed
         # Plot data
         ax.plot(t, water_level, color='lightgray', marker='x',
                                 label="observed")
         # ax.set_title(station_name)
         # ax.legend()
+
+
+def prestorm_baseline(t_days, residual, window=(-1.0, 0.0)):
+    """Mean observed residual over ``window`` (days rel. landfall), or NaN.
+
+    The default window is the day before the model start, which the NOAA fetch
+    already covers but the comparison x-limits hide.  Missing samples (NaN)
+    are ignored.
+    """
+    in_window = (t_days >= window[0]) & (t_days < window[1])
+    values = np.asarray(residual, dtype=float)[in_window]
+    values = values[np.isfinite(values)]
+    return float(values.mean()) if values.size else float("nan")
+
+
+def days_to_utc(landfall_time, t_days):
+    """Convert days relative to ``landfall_time`` to UTC ``datetime64[ms]``."""
+    offset_ms = np.round(np.asarray(t_days, dtype=float) * 86400e3)
+    return np.datetime64(landfall_time, "ms") + offset_ms.astype("timedelta64[ms]")
+
+
+def event_date_label(landfall_time, xlimits):
+    """Human date span for the plotted window, e.g. ``"26–30 Dec 2012"``."""
+    start, end = (days_to_utc(landfall_time, x).astype(datetime.datetime)
+                  for x in xlimits)
+    if (start.year, start.month) == (end.year, end.month):
+        return f"{start.day}–{end.day} {start:%b %Y}"
+    if start.year == end.year:
+        return f"{start.day} {start:%b} – {end.day} {end:%b %Y}"
+    return f"{start.day} {start:%b %Y} – {end.day} {end:%b %Y}"
+
+
+# Presentation-mode styling.  Colorblind-safe (Okabe-Ito) hues in fixed order
+# by resolution, fine -> coarse; validated with the dataviz palette checker.
+PRESENTATION_COLORS = ["#0072B2", "#D55E00", "#009E73"]
+PRESENTATION_RC = {
+    "font.size": 14,
+    "axes.titlesize": 16,
+    "axes.labelsize": 16,
+    "xtick.labelsize": 14,
+    "ytick.labelsize": 14,
+    "legend.fontsize": 13,
+}
+
+
+def plot_presentation(runs, out_path, storm_date="DEC2012", gauge_id=5,
+                      style="envelope", baseline=True,
+                      formats=("pdf", "png"), dpi=300):
+    """Single slide-ready gauge figure with runs grouped by forcing resolution.
+
+    ``runs`` is a list of ``(resolution_degrees, output_dir)`` pairs; every run
+    sharing a resolution forms one group.  ``style`` is ``"envelope"`` (min/max
+    band + median line per resolution) or ``"lines"`` (thin individual lines,
+    one legend entry per resolution).  Observed residual is drawn last, in
+    black, on top.  With ``baseline`` the observed pre-storm mean residual is
+    drawn as a dotted reference line so any non-tidal offset stays visible.
+
+    Writes ``<out_path>/gauge_<id>_<storm>_presentation_<style>.<fmt>`` for
+    each format and returns the list of written paths.
+    """
+    if style not in ("envelope", "lines"):
+        raise ValueError(f"Unknown presentation style: {style!r}")
+    import matplotlib.dates as mdates
+
+    out_path = Path(out_path)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    storm_cfg = times[storm_date]
+    landfall_time = storm_cfg[0]
+    gauge_xlimits = storm_cfg[3]
+    station_id, station_name = gauge_mapping[gauge_id]
+
+    groups = {}
+    for res, output_dir in runs:
+        t, s = load_gauge_surface(gauge_id, output_dir)
+        groups.setdefault(float(res), []).append((t, s))
+
+    with plt.rc_context(PRESENTATION_RC):
+        fig, ax = plt.subplots(figsize=(8, 4.5), layout="constrained")
+
+        for i, res in enumerate(sorted(groups)):
+            color = PRESENTATION_COLORS[i % len(PRESENTATION_COLORS)]
+            label = f"{res:g}° forcing"
+            if style == "envelope":
+                t_common, stack = _stack_runs(groups[res])
+                if t_common is None or len(stack) == 0:
+                    continue
+                dates = days_to_utc(landfall_time, t_common)
+                ax.fill_between(dates, stack.min(axis=0), stack.max(axis=0),
+                                color=color, alpha=0.25, linewidth=0,
+                                zorder=2)
+                ax.plot(dates, np.median(stack, axis=0), color=color,
+                        linewidth=2, label=label, zorder=3)
+            else:
+                for j, (t, s) in enumerate(groups[res]):
+                    ax.plot(days_to_utc(landfall_time, t), s, color=color,
+                            linewidth=1, alpha=0.6,
+                            label=label if j == 0 else None, zorder=3)
+
+        observed = fetch_observed(gauge_id, storm_cfg)
+        if observed is not None:
+            t_obs, residual = observed
+            if baseline:
+                level = prestorm_baseline(t_obs, residual)
+                if np.isfinite(level):
+                    ax.axhline(level, color="0.35", linestyle=":",
+                               linewidth=1.5, zorder=4,
+                               label=f"Obs. pre-storm mean ({level:+.2f} m)")
+            ax.plot(days_to_utc(landfall_time, t_obs), residual,
+                    color="black", linewidth=2, label="Observed", zorder=10)
+
+        ax.set_xlim(days_to_utc(landfall_time, gauge_xlimits))
+        ax.xaxis.set_major_locator(mdates.DayLocator())
+        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[12]))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d %HZ"))
+        ax.set_ylabel("Surge (m)")
+        ax.set_title(f"{station_name} ({station_id}), "
+                     f"{event_date_label(landfall_time, gauge_xlimits)}")
+        ax.grid(True, color="0.9", linewidth=0.8)
+        ax.spines[["top", "right"]].set_visible(False)
+
+        # Observed (and its baseline) first in the legend, then resolutions.
+        handles, labels = ax.get_legend_handles_labels()
+        order = sorted(range(len(labels)),
+                       key=lambda k: (not labels[k].startswith("Obs"), k))
+        ax.legend([handles[k] for k in order], [labels[k] for k in order],
+                  loc="upper right", frameon=False)
+
+        written = []
+        for fmt in formats:
+            path = out_path / (f"gauge_{gauge_id}_{storm_date}"
+                               f"_presentation_{style}.{fmt}")
+            fig.savefig(path, dpi=dpi)
+            written.append(path)
+        plt.close(fig)
+    return written
 
 
 def plot(results: list[JobResult], out_path: Path, storm_date: str,
