@@ -22,8 +22,10 @@ PLOTDIR = _plots               # Directory for plots
 # Environment variable FC should be set to fortran compiler, e.g. gfortran
 # NETCDF4_FORT_PREFIX = /opt/homebrew/Cellar/netcdf-fortran/4.6.1
 # FFLAGS += -DNETCDF -I$(NETCDF4_FORT_PREFIX)/include -L$(NETCDF4_FORT_PREFIX)/LIB
-FFLAGS += -DNETCDF $(shell nf-config --fflags)
-LFLAGS += $(FFLAGS) $(shell nf-config --flibs) $(shell nc-config --libs)
+# FFLAGS += -DNETCDF $(shell nf-config --fflags)
+# LFLAGS += $(FFLAGS) $(shell nf-config --flibs) $(shell nc-config --libs)
+FFLAGS += -DNETCDF $(NETCDF_FFLAGS)
+LFLAGS += $(FFLAGS) $(NETCDF_LFLAGS)
 
 # ---------------------------------
 # package sources for this program:
