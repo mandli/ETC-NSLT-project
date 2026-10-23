@@ -82,30 +82,6 @@ def test_prestorm_baseline():
     assert np.isnan(gc.prestorm_baseline(t[t >= 0], resid[t >= 0]))
 
 
-def test_fetch_noaa_hourly_from_cache(tmp_path):
-    """Hourly fallback parses cached NOAA CSV (no network) incl. a gap."""
-    import datetime
-    begin = datetime.datetime(1992, 12, 7)
-    end = datetime.datetime(1992, 12, 7, 2)
-    dates = "199212070000_199212070200"
-    for product, header, values in (
-            ("hourly_height", "Date Time, Water Level, Sigma, I, L",
-             ["1.5,0.000,0,0", ",,,", "2.5,0.000,0,0"]),
-            ("predictions", "Date Time, Prediction", ["1.0", "1.25", "2.0"])):
-        path = (tmp_path / f"{product}_hourly" / "8518750" / dates
-                / "GMT_STND_metric")
-        path.parent.mkdir(parents=True)
-        rows = [f"1992-12-07 0{h}:00,{v}" for h, v in enumerate(values)]
-        path.write_text("\n".join([header] + rows) + "\n")
-
-    t, wl, pred = gc.fetch_noaa_hourly("8518750", begin, end,
-                                       cache_dir=tmp_path)
-    np.testing.assert_array_equal(
-        t, np.array(["1992-12-07T00:00", "1992-12-07T01:00",
-                     "1992-12-07T02:00"], dtype="datetime64[m]"))
-    np.testing.assert_allclose(wl - pred, [0.5, np.nan, 0.5])
-
-
 def test_discover_runs(tmp_path):
     """Only parseable dirs for the storm, at the sea level, with the gauge."""
     def make(name, gauge=True):

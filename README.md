@@ -40,8 +40,12 @@ Cross-run gauge and performance figures come from `--plot-only`.
 Observed residuals (water level − tide prediction, NOAA CO-OPS, metric, GMT) are
 fetched by `gauge_comparison.fetch_observed`, shared with `setplot.py`.  NOAA's
 6-minute `water_level` product only exists from ~1996, so for `DEC1992` it falls
-back to the `hourly_height` product with hourly predictions
-(`fetch_noaa_hourly`).  1992 coverage: hourly data for every gauge except
+back to the `hourly_height` product with hourly predictions, via GeoClaw's
+`fetch_noaa_tide_data(..., product="hourly_height")` (requires the clawpack
+`noaa-hourly-height` change).  A failed download (e.g. no network on a compute
+node) leaves the observed line off the plot rather than failing it; responses
+are cached under `$CLAW/geoclaw/scratch`, so fetching once on a login node
+covers the compute nodes.  1992 coverage: hourly data for every gauge except
 **Kings Point (8516945)** and **New Haven (8465705)**, which have no 1992 record.
 The Battery series was cross-checked against an independently supplied file
 (`wlev.1992.tx`/`pred.1992.tx`, MHHW datum): identical water levels; predictions
