@@ -20,7 +20,7 @@ The track shift is a 5-point cardinal star — center + N/S/E/W at 0.5° — app
 via GeoClaw's gridded-forcing registration shift (`x_shift`/`y_shift`, `+x` East,
 `+y` North), which translates the storm field across the fixed crop window.
 Crossed with the other axes the star keeps `track_lon ⟂ track_lat` and both
-orthogonal to the other parameters, so the ESA slopes stay clean (≈315 runs
+orthogonal to the other parameters, so the ESA slopes stay clean (≈405 runs
 total).
 
 **Sea level is no longer swept.** The ESA superposition check (below) showed peak
@@ -29,9 +29,23 @@ m, so it is fixed at 0.0 and re-applied post hoc rather than costing a factorial
 dimension.  Older ensembles that did sweep it still analyze correctly (the
 track-shift suffix in the job-directory name is optional to the parser).
 
-Storms: `DEC1992` (0.25° only), `DEC2012`, `NOV2018`.  Runs locally or on NCAR
+Storms: `DEC1992`, `DEC2012`, `NOV2018`, each at all three forcing resolutions
+(the coarse `DEC1992` files are exact subsamples of the 0.25° field, staged as
+`DEC1992_1pt00.nc`/`DEC1992_1pt50.nc`).  Runs locally or on NCAR
 Derecho (PBS); see the module docstring for the full CLI and Derecho workflow.
 Cross-run gauge and performance figures come from `--plot-only`.
+
+### Observed gauge data
+
+Observed residuals (water level − tide prediction, NOAA CO-OPS, metric, GMT) are
+fetched by `gauge_comparison.fetch_observed`, shared with `setplot.py`.  NOAA's
+6-minute `water_level` product only exists from ~1996, so for `DEC1992` it falls
+back to the `hourly_height` product with hourly predictions
+(`fetch_noaa_hourly`).  1992 coverage: hourly data for every gauge except
+**Kings Point (8516945)** and **New Haven (8465705)**, which have no 1992 record.
+The Battery series was cross-checked against an independently supplied file
+(`wlev.1992.tx`/`pred.1992.tx`, MHHW datum): identical water levels; predictions
+differ by ≤3.6 cm (mean 8 mm), presumably an older harmonic-constant set.
 
 ## Ensemble Sensitivity Analysis (ESA) — `run_sensitivity.py`
 
@@ -83,7 +97,7 @@ Output lands under `$SHARED_RUNS_PATH/sensitivity/<run-label>/`:
 - **Sensitivity heatmap** — gauges (rows) × parameters (columns), colored by
   standardized sensitivity on a zero-centered diverging scale.  Cells failing
   the significance test are hatched; undefined cells (a constant parameter,
-  e.g. single-resolution `DEC1992`) are grey.  The compact "at a glance" view.
+  e.g. a single-resolution storm) are grey.  The compact "at a glance" view.
 - **Tornado diagram, one per gauge** — a horizontal bar chart where each bar is
   one parameter's standardized sensitivity, sorted by magnitude (largest on top)
   and extending left/right from a central zero line.  Sorting by magnitude gives
@@ -113,7 +127,7 @@ do the storms agree on the sign and rank of a parameter's effect? — and is
 deliberately *not* a pooled regression: pooling raw peak surge across storms
 would conflate their different dynamical regimes and absolute surge magnitudes.
 Per-storm ESA remains the primary analysis.  A storm missing a parameter (e.g.
-single-resolution `DEC1992` for resolution) is simply absent from that panel.
+a single-resolution storm for resolution) is simply absent from that panel.
 
 ### Sea-level superposition check
 

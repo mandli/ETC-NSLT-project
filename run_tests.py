@@ -520,10 +520,9 @@ def main() -> None:
         return
 
     storm_dates = ["DEC1992", "DEC2012", "NOV2018"]
-    # Resolutions available per storm — not every storm has every resolution
-    # (DEC1992 currently only has 0pt25 data).
+    # Resolutions available per storm — not every storm has every resolution.
     resolutions = {
-        "DEC1992": ["0pt25"],
+        "DEC1992": ["0pt25", "1pt00", "1pt50"],
         "DEC2012": ["0pt25", "1pt00", "1pt50"],
         "NOV2018": ["0pt25", "1pt00", "1pt50"],
     }

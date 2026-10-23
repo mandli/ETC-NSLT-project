@@ -1,5 +1,7 @@
 import os
+import sys
 import datetime
+from pathlib import Path
 
 import numpy as np
 
@@ -37,6 +39,11 @@ import clawpack.geoclaw.util as geoutil
 import clawpack.amrclaw.data as amrdata
 import clawpack.geoclaw.surge.storm as stormtools
 
+# plotclaw imports this file by path from the run directory, so make the
+# project's own modules importable for the shared NOAA observation fetch.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gauge_comparison import fetch_observed
+
 def setplot(plotdata=None):
     """"""
 
@@ -72,7 +79,7 @@ def setplot(plotdata=None):
     #   gauge_xlimits  - [t_start, t_end] in days relative to landfall_time
     storm_times = {
         "DEC1992": (np.datetime64("1992-12-08T00:00:00.00"),
-                    datetime.datetime(1992, 12, 8, 0, 0),
+                    datetime.datetime(1992, 12, 7, 0, 0),
                     datetime.datetime(1992, 12, 16, 0, 0),
                     [2, 6]),
         "DEC2012": (np.datetime64("2012-12-26T00:00"),
@@ -263,25 +270,14 @@ def setplot(plotdata=None):
     def plot_observed(current_data, storm):
         """Fetch and plot gauge data for gauges used."""
 
-        # Map GeoClaw gauge number to NOAA gauge number and location/name
-        station_id, station_name = gauge_mapping[current_data.gaugesoln.id]
+        station_name = gauge_mapping[current_data.gaugesoln.id][1]
 
-        landfall_time, begin_date, end_date, _gauge_xlimits = get_storm_times(storm)
-
-        # Fetch data if needed
-        date_time, water_level, tide = geoutil.fetch_noaa_tide_data(station_id,
-                                                                    begin_date,
-                                                                    end_date)
-        
-        if water_level is None:
-            print("*** Could not fetch gauge {}.".format(station_id))
-        else:
-            # Convert to seconds relative to landfall
-            t = (date_time - landfall_time) / np.timedelta64(1, 's')
-            t /= (24 * 60**2)
-
-            # Detide
-            water_level -= tide
+        # Shared with gauge_comparison.py, including the hourly fallback for
+        # pre-1996 records (DEC1992).  Returns the detided residual in days.
+        observed = fetch_observed(current_data.gaugesoln.id,
+                                  get_storm_times(storm))
+        if observed is not None:
+            t, water_level = observed
 
             # Plot data
             ax = plt.gca()

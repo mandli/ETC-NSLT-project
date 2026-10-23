@@ -23,7 +23,7 @@ gauge_mapping = {1: ('8518750', 'The Battery, NY'),
 #   [landfall_time, noaa_begin, noaa_end, gauge_xlimits]
 # gauge_xlimits is [t_start, t_end] in days relative to landfall_time.
 times = {"DEC1992": [np.datetime64("1992-12-08T00:00:00.00"),
-                        datetime.datetime(1992, 12, 8, 0, 0),
+                        datetime.datetime(1992, 12, 7, 0, 0),
                         datetime.datetime(1992, 12, 16, 0, 0),
                         [2, 6]],
          "DEC2012": [np.datetime64("2012-12-26T00:00"),
@@ -133,6 +133,64 @@ def plot_ensemble_band(ax, run_data, color="steelblue", n_points=500):
     ax.plot(t_common, mean, color=color, linewidth=2.0, linestyle="--",
             label="ensemble mean")
 
+NOAA_API_URL = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+
+
+def fetch_noaa_hourly(station_id, begin_date, end_date, datum="STND",
+                      cache_dir=None):
+    """Fetch NOAA hourly heights and hourly tide predictions for a station.
+
+    Fallback for records that predate NOAA's 6-minute ``water_level`` product
+    (roughly before 1996, e.g. the DEC1992 storm), which
+    ``geoutil.fetch_noaa_tide_data`` hard-codes.  Uses the ``hourly_height``
+    product with ``predictions`` at ``interval=h`` so both share timestamps.
+    Metric, GMT.  Responses are cached next to geoutil's cache
+    (``$CLAW/geoclaw/scratch``) unless ``cache_dir`` is given.
+
+    Returns ``(date_time, water_level, prediction)``; ``water_level`` is
+    ``None`` if NOAA has no hourly heights for the station/window.
+    """
+    import os
+    from urllib.parse import urlencode
+    from urllib.request import urlopen
+
+    if cache_dir is None:
+        cache_dir = Path(os.environ["CLAW"]) / "geoclaw" / "scratch"
+    dates = f"{begin_date:%Y%m%d%H%M}_{end_date:%Y%m%d%H%M}"
+
+    def fetch(product, extra):
+        cache_path = (Path(cache_dir) / f"{product}_hourly" / station_id
+                      / dates / f"GMT_{datum}_metric")
+        if cache_path.exists():
+            text = cache_path.read_text()
+        else:
+            params = {"product": product, "application": "NOS.COOPS.TAC.WL",
+                      "format": "csv", "station": station_id,
+                      "begin_date": f"{begin_date:%Y%m%d %H:%M}",
+                      "end_date": f"{end_date:%Y%m%d %H:%M}",
+                      "time_zone": "GMT", "datum": datum, "units": "metric",
+                      **extra}
+            with urlopen(f"{NOAA_API_URL}?{urlencode(params)}") as response:
+                text = response.read().decode("utf-8")
+            if not text.startswith("Date Time") or "Error" in text:
+                return None, None
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(text)
+        a = np.genfromtxt(text.splitlines(), usecols=(0, 1),
+                          dtype="datetime64[m], float", skip_header=1,
+                          delimiter=",", missing_values="")
+        return a["f0"], a["f1"]
+
+    date_time, water_level = fetch("hourly_height", {})
+    date_time2, prediction = fetch("predictions", {"interval": "h"})
+    if water_level is None or prediction is None:
+        return date_time2, None, prediction
+    if not np.array_equal(date_time, date_time2):
+        raise ValueError(f"Hourly heights and predictions for {station_id} "
+                         "have different timestamps")
+    return date_time, water_level, prediction
+
+
 def fetch_observed(gauge_number, times):
     """Fetch a NOAA gauge record and return its detided residual.
 
@@ -142,6 +200,9 @@ def fetch_observed(gauge_number, times):
     datum ``STND``, metric, GMT), so the datum cancels in the subtraction.  No
     baseline is removed: the residual still carries any non-tidal offset
     (e.g. sea-level rise since the tidal epoch, monthly MSL anomaly).
+
+    Records without 6-minute data (pre-1996, e.g. DEC1992) fall back to NOAA's
+    hourly heights via ``fetch_noaa_hourly``.
     """
     station_id, station_name = gauge_mapping[gauge_number]
 
@@ -154,6 +215,10 @@ def fetch_observed(gauge_number, times):
                                                                 begin_date,
                                                                 end_date,
                                                                 verbose=False)
+    if water_level is None:
+        print(f"*** No 6-minute data for {station_id}, trying hourly heights.")
+        date_time, water_level, tide = fetch_noaa_hourly(station_id,
+                                                         begin_date, end_date)
 
     if water_level is None:
         print("*** Could not fetch gauge {}.".format(station_id))
