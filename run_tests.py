@@ -89,7 +89,7 @@ from batch.plot import plot_job
 import numpy as np
 
 import clawpack.clawutil.util as clawutil
-from clawpack.geoclaw.surge.storm import Storm
+from clawpack.geoclaw.met.storm import Storm
 import gauge_comparison as gc
 
 logging.basicConfig(

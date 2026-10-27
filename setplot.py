@@ -34,10 +34,10 @@ import matplotlib.pyplot as plt
 import clawpack.visclaw.gaugetools as gaugetools
 import clawpack.clawutil.data as clawutil
 import clawpack.geoclaw.data as geodata
-import clawpack.geoclaw.surge.plot as surgeplot
+import clawpack.geoclaw.met.plot as surgeplot
 import clawpack.geoclaw.util as geoutil
 import clawpack.amrclaw.data as amrdata
-import clawpack.geoclaw.surge.storm as stormtools
+import clawpack.geoclaw.met.storm as stormtools
 
 # plotclaw imports this file by path from the run directory, so make the
 # project's own modules importable for the shared NOAA observation fetch.
@@ -60,7 +60,7 @@ def setplot(plotdata=None):
     clawdata.read(os.path.join(plotdata.outdir, 'claw.data'))
     physics = geodata.GeoClawData()
     physics.read(os.path.join(plotdata.outdir, 'geoclaw.data'))
-    surge_data = geodata.SurgeData()
+    surge_data = geodata.MetData()
     surge_data.read(os.path.join(plotdata.outdir, 'surge.data'))
     friction_data = geodata.FrictionData()
     friction_data.read(os.path.join(plotdata.outdir, 'friction.data'))

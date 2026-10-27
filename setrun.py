@@ -12,7 +12,8 @@ import os
 
 import numpy as np
 
-from clawpack.geoclaw.surge.storm import Storm
+from clawpack.geoclaw.met.storm import Storm
+from clawpack.geoclaw.topotools import Topography
 
 # Time Conversions
 def days2seconds(days):
@@ -409,7 +410,11 @@ def setgeo(rundata):
     topo_dir = Path(os.environ["DATA_PATH"]) / "topography"
     # topo_data.topofiles.append([3, os.path.join(topo_dir, 'atlantic_1min.tt3')])
     # topo_data.topofiles.append([3, os.path.join(topo_dir, 'newyork_3s.tt3')])
-    topo_data.topofiles.append([4, topo_dir / "GEBCO" / "GEBCO_2025.nc"])
+    # Set type/path as attributes; Topography(path=...) would read the file now
+    gebco = Topography()
+    gebco.topo_type = 4
+    gebco.path = str(topo_dir / "GEBCO" / "GEBCO_2025.nc")
+    topo_data.topofiles.append(gebco)
     # ncei_base_path = os.path.join(topo_dir, "ny_area", "ncei19_ny")
     ncei_base_path = topo_dir / "coastal_atlantic_9th_second"
 
