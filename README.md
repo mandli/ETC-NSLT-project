@@ -51,6 +51,64 @@ The Battery series was cross-checked against an independently supplied file
 (`wlev.1992.tx`/`pred.1992.tx`, MHHW datum): identical water levels; predictions
 differ by ≤3.6 cm (mean 8 mm), presumably an older harmonic-constant set.
 
+## Topography and vertical datums
+
+The model's vertical datum is **local mean sea level (MSL) of the current
+National Tidal Datum Epoch (NTDE, 1983–2001)**, so `sea_level` is the
+event-time departure from that epoch, the same zero that NOAA's residuals use.
+Each topo source has its own datum and needs a per-file `z_shift`, with
+`z_model = z_file + z_shift`. Here `z_shift` is the height of the file datum's
+zero above local MSL.
+
+Datums, read from each file's own metadata (2026-10-29):
+
+| Source | Resolution | Vertical datum | Declared in |
+|---|---|---|---|
+| GEBCO_2025 | 15″ | none: EPSG:5831 "Instantaneous Water Level depth" (nominally MSL) | netCDF `geospatial_bounds_vertical_crs` |
+| NCEI CUDEM tiles (`ncei19_*.tif`) | 1/9″ | NAVD88 (EPSG:5703) | GeoTIFF vertical key 5703, "Topography-Bathymetry; NAVD88" |
+| NCEI CRM 2023 (`crm_vol1_2023.nc`) | 1″ | EGM2008 (EPSG:3855) | `z:vert_crs_epsg`, "Topography; EGM2008 height" |
+
+`z_shift` (m) at each model gauge position. Source: NOAA VDatum web API
+(region `contiguous`, GEOID18).
+
+| Gauge | GEBCO | CUDEM (NAVD88) | CRM 2023 (EGM2008) | CO-OPS sheet, NAVD88 → MSL |
+|---|---|---|---|---|
+| 1 The Battery | 0 | +0.065 | +0.416 | +0.063 |
+| 2 Kings Point | 0 | +0.069 | +0.401 | +0.096 |
+| 3 Montauk | 0 | +0.101 | +0.427 | +0.101 |
+| 4 Bridgeport | 0 | +0.067 | +0.448 | +0.067 |
+| 5 New Haven | 0 | +0.087 | +0.448 | n/a |
+| 6 Newport | 0 | — (no 1/9″ coverage) | +0.455 | +0.093 |
+| 7 Sandy Hook | 0 | +0.073 | +0.385 | +0.073 |
+| 8 Atlantic City | 0 | +0.117 | +0.466 | +0.122 |
+| VDatum uncertainty | | ±0.06 | ±0.17 | |
+
+GEBCO gets 0 because it has no datum to convert from, and its near-shore
+errors are meters anyway. The values vary by ≤ 2 cm among gauges that share a
+tile-crop rectangle, so one `z_shift` per rectangle is enough.
+
+**Checks.**
+- VDatum matches the CO-OPS datum sheets within 5 mm at six stations. Kings
+  Point is off by 2.7 cm, probably because the model gauge point is not the
+  station position.
+- An independent PROJ chain at The Battery puts the NAVD88 zero at −0.380 m in
+  EGM2008, against VDatum's −0.351 m. That chain is GEOID18 → time-dependent
+  Helmert NAD83(2011) → ITRF2014 → EGM2008 grid. The 3 cm gap is frame
+  realization, well inside the uncertainty.
+- Once corrected, CRM and CUDEM cell means at the gauge cells agree within
+  0.02–0.21 m; raw, they differ by 0.35–0.56 m. That confirms the sign.
+
+**Traps.**
+- Locally converted `.nc` copies of the CUDEM tiles say "above mean sea level".
+  That is a generic label; the source `.tif` says NAVD88.
+- PROJ's default `EPSG:6349 → EPSG:9518` operation treats NAD83 as WGS 84 and
+  is about 1.25 m wrong here.
+
+**Effect on the gauges.** At level 6 (~385 m), every gauge cell stays wet after
+correction, with cell means of −3.5 to −8 m. Sandy Hook needs level 6: with
+the CRM correction its level-5 cell mean is +0.52 m. The current setup uses
+GEBCO only, which puts Bridgeport on land (+3 m at every level).
+
 ## Ensemble Sensitivity Analysis (ESA) — `run_sensitivity.py`
 
 A *derived statistic* on top of the ensemble, following the atmospheric-science
@@ -179,8 +237,9 @@ certify it, add one intermediate sea-level value to a small sub-sweep and check
 - **Standardized magnitudes scale with the sweep width** through `σ_x`; the raw
   `slope` in the summary CSV is the sweep-independent physical quantity.
 - **Gauge 4 (Bridgeport, CT, 8467150) is dry over the window in every run** and
-  is therefore excluded from all storms.  This is a known, unexplained issue
-  under investigation — not an analysis artifact.
+  is therefore excluded from all storms.  Cause: GEBCO puts the gauge cell on
+  land at every level (see "Topography and vertical datums"); not an analysis
+  artifact.
 
 ### Method verification
 
